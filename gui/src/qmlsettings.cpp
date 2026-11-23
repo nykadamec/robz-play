@@ -150,6 +150,118 @@ void QmlSettings::setSharpening(int level)
     emit sharpeningChanged();
 }
 
+int QmlSettings::pictureEnhanceMode() const
+{
+    return settings->GetPictureEnhanceMode();
+}
+
+void QmlSettings::setPictureEnhanceMode(int mode)
+{
+    settings->SetPictureEnhanceMode(mode);
+    emit pictureEnhanceModeChanged();
+}
+
+int QmlSettings::vibranceLevel() const
+{
+    return settings->GetVibranceLevel();
+}
+
+void QmlSettings::setVibranceLevel(int level)
+{
+    settings->SetVibranceLevel(level);
+    emit vibranceLevelChanged();
+}
+
+bool QmlSettings::debandQuickEnabled() const
+{
+    return settings->GetDebandQuickEnabled();
+}
+
+void QmlSettings::setDebandQuickEnabled(bool enabled)
+{
+    settings->SetDebandQuickEnabled(enabled);
+    emit debandQuickEnabledChanged();
+}
+
+bool QmlSettings::macAwdlGuardEnabled() const
+{
+    return settings->GetMacAwdlGuardEnabled();
+}
+
+void QmlSettings::setMacAwdlGuardEnabled(bool enabled)
+{
+    settings->SetMacAwdlGuardEnabled(enabled);
+    emit macAwdlGuardEnabledChanged();
+}
+
+QString QmlSettings::macVulkanDriver() const
+{
+    return settings->GetMacVulkanDriver();
+}
+
+void QmlSettings::setMacVulkanDriver(const QString &driver)
+{
+    if (settings->GetMacVulkanDriver() == driver)
+        return;
+    settings->SetMacVulkanDriver(driver);
+    emit macVulkanDriverChanged();
+}
+
+bool QmlSettings::moltenVkArgBuffers() const
+{
+    return settings->GetMoltenVkArgBuffers();
+}
+
+void QmlSettings::setMoltenVkArgBuffers(bool enabled)
+{
+    if (settings->GetMoltenVkArgBuffers() == enabled)
+        return;
+    settings->SetMoltenVkArgBuffers(enabled);
+    emit moltenVkArgBuffersChanged();
+}
+
+QStringList QmlSettings::availableMacVulkanDrivers() const
+{
+    QStringList list;
+#ifdef Q_OS_MACOS
+    const QString app_dir = QCoreApplication::applicationDirPath();
+    auto existsAny = [](const QStringList &paths) {
+        for (const QString &p : paths) {
+            if (QFileInfo::exists(p))
+                return true;
+        }
+        return false;
+    };
+    const bool has_mvk = existsAny({
+        app_dir + "/../Resources/vulkan/icd.d/MoltenVK_icd.json",
+        QStringLiteral("/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json"),
+        QStringLiteral("/opt/homebrew/opt/molten-vk/etc/vulkan/icd.d/MoltenVK_icd.json"),
+        QStringLiteral("/usr/local/etc/vulkan/icd.d/MoltenVK_icd.json")
+    });
+    bool has_kk = existsAny({
+        app_dir + "/../Resources/vulkan/icd.d/kosmickrisp_mesa_icd.json",
+        QStringLiteral("/opt/homebrew/etc/vulkan/icd.d/kosmickrisp_mesa_icd.json"),
+        QStringLiteral("/usr/local/share/vulkan/icd.d/kosmickrisp_mesa_icd.json")
+    });
+    if (!has_kk) {
+        const QDir sdk_root(QDir::homePath() + "/VulkanSDK");
+        if (sdk_root.exists()) {
+            for (const QString &ver : sdk_root.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::Reversed)) {
+                if (QFileInfo::exists(sdk_root.filePath(ver + "/macOS/share/vulkan/icd.d/kosmickrisp_mesa_icd.json"))) {
+                    has_kk = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (has_mvk)
+        list.append(QStringLiteral("MoltenVK"));
+    if (has_kk)
+        list.append(QStringLiteral("KosmicKrisp"));
+#endif
+    return list;
+}
+
 QString QmlSettings::language() const
 {
     return settings->GetLanguage();
@@ -205,6 +317,17 @@ void QmlSettings::setFrameGenFlowDivisor(int divisor)
 {
     settings->SetFrameGenFlowDivisor(divisor);
     emit frameGenFlowDivisorChanged();
+}
+
+bool QmlSettings::frameGenAutoScale() const
+{
+    return settings->GetFrameGenAutoScale();
+}
+
+void QmlSettings::setFrameGenAutoScale(bool enabled)
+{
+    settings->SetFrameGenAutoScale(enabled);
+    emit frameGenAutoScaleChanged();
 }
 
 bool QmlSettings::streamerMode() const

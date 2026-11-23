@@ -152,12 +152,19 @@ public:
     Q_INVOKABLE void releaseInput();
     Q_INVOKABLE void requestOverlayUpdate();
     Q_INVOKABLE void setOverlayInteractionActive(bool active);
+    Q_INVOKABLE void setQuickOverlayVisible(bool visible);
     Q_INVOKABLE void setStatsOverlayActive(bool active);
     Q_INVOKABLE void setFpsCounterActive(bool active);
     // Shows every text of the interface again, in the language the translator is now set to.
     void retranslateUi();
     // Robz Play picture sharpening: 0 off, 1 low, 2 medium, 3 high. Takes effect on the next frame.
     Q_INVOKABLE void setSharpening(int level) { sharpen_level.storeRelease(qBound(0, level, 3)); }
+    // Picture enhancement technology: 0 Off, 1 Adaptive Sharpen, 2 AMD FidelityFX CAS, 3 Cinema Vivid, 4 Ultra Crisp
+    Q_INVOKABLE void setPictureEnhanceMode(int mode) { picture_enhance_mode.storeRelease(qBound(0, mode, 4)); }
+    // Vibrance & clarity level: 0 off, 1 subtle, 2 vivid
+    Q_INVOKABLE void setVibranceLevel(int level) { vibrance_level.storeRelease(qBound(0, level, 2)); }
+    // Quick debanding toggle
+    Q_INVOKABLE void setDebandQuickEnabled(bool enabled) { deband_quick_enabled.storeRelease(enabled ? 1 : 0); }
     // Diagnostics (frame generation self-test): count a frame as shown without rendering it,
     // and save what the overlay currently draws to an image file.
     void notePresentedFrame() { presented_frames_counter.fetchAndAddRelaxed(1); }
@@ -327,6 +334,7 @@ private:
     QAtomicInteger<int> present_pacing_reset_pending = 0;
     QAtomicInteger<int> ui_priority_update_pending = 0;
     QAtomicInteger<int> overlay_interaction_active = 0;
+    QAtomicInteger<int> quick_overlay_visible = 1;
     bool keep_video = false;
     RenderBackend render_backend = RenderBackend::Vulkan;
     int grab_input = 0;
@@ -486,7 +494,12 @@ private:
     const struct pl_hook *fsrcnnx_hook_8 = nullptr;
     const struct pl_hook *fsrcnnx_hook_16 = nullptr;
     const struct pl_hook *sharpen_hooks[3] = {nullptr, nullptr, nullptr};
+    const struct pl_hook *cas_hooks[3] = {nullptr, nullptr, nullptr};
+    const struct pl_hook *vibrance_hooks[2] = {nullptr, nullptr};
     QAtomicInteger<int> sharpen_level = 0;
+    QAtomicInteger<int> picture_enhance_mode = 2;
+    QAtomicInteger<int> vibrance_level = 0;
+    QAtomicInteger<int> deband_quick_enabled = 1;
 
     struct {
         PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr;

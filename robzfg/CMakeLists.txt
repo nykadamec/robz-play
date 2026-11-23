@@ -9,6 +9,10 @@ if(NOT DEFINED PROJECT_NAME)
 	project(robzfg LANGUAGES C CXX)
 endif()
 
+if(APPLE)
+	enable_language(OBJCXX)
+endif()
+
 option(ROBZFG_BUILD_LAB "Build the robzfg-lab measurement tool" ON)
 
 set(ROBZFG_NCNN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../_deps/ncnn-install" CACHE PATH "ncnn install prefix (built with NCNN_VULKAN=ON)")
@@ -34,11 +38,24 @@ add_library(robzfg STATIC
 	src/dedup.cpp
 	src/rife_interpolator.cpp
 	src/warp_layer.cpp)
+if(APPLE)
+	target_sources(robzfg PRIVATE
+		src/rife_metal.h
+		src/rife_metal.mm)
+	set_source_files_properties(src/rife_metal.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+endif()
 target_compile_features(robzfg PUBLIC cxx_std_17)
 target_include_directories(robzfg
 	PUBLIC include
 	PRIVATE src "${ROBZFG_SHADER_DIR}")
 target_link_libraries(robzfg PUBLIC ncnn)
+if(APPLE)
+	target_link_libraries(robzfg PUBLIC
+		"-framework Foundation"
+		"-framework Metal"
+		"-framework MetalPerformanceShaders"
+		"-framework MetalPerformanceShadersGraph")
+endif()
 
 if(ROBZFG_BUILD_LAB)
 	find_package(PkgConfig REQUIRED)

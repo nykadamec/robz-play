@@ -264,14 +264,16 @@ uint to_byte(float v)
 // The measurements are averaged over a small cross for robustness against noise, but a
 // neighbour only counts as far as it is unchanged itself: the letters of a thin text sit
 // right next to moving scenery, which must neither dilute nor decide the letter's case.
-float static_weight(vec2 pos, vec2 f0, vec2 f1)
+float static_weight(vec2 pos, vec2 f0, vec2 f1, float centre_a, float centre_b)
 {
     if (p.protect_static == 0)
         return 0.f;
+    // Skip the 30-tap check whenever the motion field itself is already near-zero (<0.5 px),
+    // since moved0/moved1 == base and travel == 0 makes against_motion == in_place.
+    if (dot(f0, f0) < 0.16f && dot(f1, f1) < 0.16f && dot(f1 - f0, f1 - f0) < 0.24f)
+        return 0.f;
 
     ivec2 base = ivec2(floor(pos + 0.5f));
-    float centre_a = y0_at(base.x, base.y);
-    float centre_b = y1_at(base.x, base.y);
     float unchanged = 1.f - clamp((abs(centre_a - centre_b) - STATIC_LEVEL) / STATIC_LEVEL_RANGE, 0.f, 1.f);
     if (unchanged <= 0.f)
         return 0.f;
@@ -287,10 +289,12 @@ float static_weight(vec2 pos, vec2 f0, vec2 f1)
     for (int i = 0; i < 5; i++)
     {
         ivec2 q = base + taps[i];
-        float a = y0_at(q.x, q.y);
-        float b = y1_at(q.x, q.y);
+        float a = i == 0 ? centre_a : y0_at(q.x, q.y);
+        float b = i == 0 ? centre_b : y1_at(q.x, q.y);
         float difference = abs(a - b);
         float weight = i == 0 ? 1.f : 1.f - clamp((difference - STATIC_LEVEL) / STATIC_LEVEL_RANGE, 0.f, 1.f);
+        if (weight <= 0.f)
+            continue;
         weight_sum += weight;
         in_place += weight * difference;
         along_motion += weight * abs(y0_at(moved0.x + taps[i].x, moved0.y + taps[i].y) - y1_at(moved1.x + taps[i].x, moved1.y + taps[i].y));
@@ -315,6 +319,17 @@ void main()
         return;
 
     int x0 = gx * 4;
+    uint y0_word = y0_data[gy * words_per_row + gx];
+    uint y1_word = y1_data[gy * words_per_row + gx];
+
+    vec2 c_f0_0 = vec2(0.f);
+    vec2 c_f1_0 = vec2(0.f);
+    float c_m_0 = 0.5f;
+    float c_sw_0 = 0.f;
+    vec2 c_f0_1 = vec2(0.f);
+    vec2 c_f1_1 = vec2(0.f);
+    float c_m_1 = 0.5f;
+    float c_sw_1 = 0.f;
 
     uint yword = 0u;
     for (int i = 0; i < 4; i++)
@@ -325,30 +340,51 @@ void main()
         float m;
         sample_field(pos, f0, f1, m);
         float v = luma0(pos + f0) * m + luma1(pos + f1) * (1.f - m);
-        float still = mix(y0_at(x0 + i, gy), y1_at(x0 + i, gy), p.t);
-        v = mix(v, still, static_weight(pos, f0, f1));
+        float a0 = float((y0_word >> uint(i * 8)) & 0xFFu);
+        float b0 = float((y1_word >> uint(i * 8)) & 0xFFu);
+        float still = mix(a0, b0, p.t);
+        float sw = static_weight(pos, f0, f1, a0, b0);
+        v = mix(v, still, sw);
         yword |= to_byte(v) << uint(i * 8);
+        if (i == 0)
+        {
+            c_f0_0 = f0;
+            c_f1_0 = f1;
+            c_m_0 = m;
+            c_sw_0 = sw;
+        }
+        else if (i == 2)
+        {
+            c_f0_1 = f0;
+            c_f1_1 = f1;
+            c_m_1 = m;
+            c_sw_1 = sw;
+        }
     }
     oy_data[gy * words_per_row + gx] = yword;
 
     if ((gy & 1) == 0)
     {
+        int cy = gy / 2;
+        uint uv0_word = uv0_data[cy * words_per_row + gx];
+        uint uv1_word = uv1_data[cy * words_per_row + gx];
         uint uvword = 0u;
         for (int j = 0; j < 2; j++)
         {
             vec2 pos = vec2(float(x0 + j * 2), float(gy) + 0.5f);
-            vec2 f0;
-            vec2 f1;
-            float m;
-            sample_field(pos, f0, f1, m);
+            vec2 f0 = j == 0 ? c_f0_0 : c_f0_1;
+            vec2 f1 = j == 0 ? c_f1_0 : c_f1_1;
+            float m = j == 0 ? c_m_0 : c_m_1;
+            float sw = j == 0 ? c_sw_0 : c_sw_1;
             vec2 uv = chroma0(pos + f0) * m + chroma1(pos + f1) * (1.f - m);
-            int cx = gx * 2 + j;
-            int cy = gy / 2;
-            vec2 still = mix(uv0_at(cx, cy), uv1_at(cx, cy), p.t);
-            uv = mix(uv, still, static_weight(pos, f0, f1));
+            uint shift = uint(j * 16);
+            vec2 uv0_s = vec2(float((uv0_word >> shift) & 0xFFu), float((uv0_word >> (shift + 8u)) & 0xFFu));
+            vec2 uv1_s = vec2(float((uv1_word >> shift) & 0xFFu), float((uv1_word >> (shift + 8u)) & 0xFFu));
+            vec2 still = mix(uv0_s, uv1_s, p.t);
+            uv = mix(uv, still, sw);
             uvword |= to_byte(uv.x) << uint(j * 16);
             uvword |= to_byte(uv.y) << uint(j * 16 + 8);
         }
-        ouv_data[(gy / 2) * words_per_row + gx] = uvword;
+        ouv_data[cy * words_per_row + gx] = uvword;
     }
 }

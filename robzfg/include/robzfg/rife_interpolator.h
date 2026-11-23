@@ -89,6 +89,11 @@ public:
 	// Drops the history, e.g. after a scene cut or a stream restart.
 	void reset();
 
+	// Dynamically changes flow_divisor (1, 2, 3, or 4) at runtime without reloading the model.
+	// Forces a clean frame history reset on the next push().
+	bool setFlowDivisor(int flow_divisor);
+	int flowDivisor() const;
+
 private:
 	struct Impl;
 	std::unique_ptr<Impl> d;

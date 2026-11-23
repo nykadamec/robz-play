@@ -25,6 +25,21 @@ Item {
     readonly property bool restartPending: Chiaki.settings.rendererBackend !== startRendererBackend
         || Chiaki.settings.directFrameMapping !== startDirectFrameMapping
         || (Chiaki.window.runtimeRendererBackend === 1 && Chiaki.settings.vSyncEnabled !== startVSync)
+    readonly property bool quickOverlayVisible:
+        backgroundPane.visible ||
+        stack.depth !== 1 ||
+        stack.busy ||
+        !stack.currentItem ||
+        stack.currentItem.hasVisibleStreamOverlay === undefined ||
+        stack.currentItem.hasVisibleStreamOverlay ||
+        placeboSettingsRect.visible ||
+        displaySettingsRect.visible ||
+        colorMappingSettingsRect.visible ||
+        errorToastRect.opacity > 0.0 ||
+        infoDialog.visible ||
+        confirmDialog.visible ||
+        remindDialog.visible
+    onQuickOverlayVisibleChanged: if (Chiaki.window) Chiaki.window.setQuickOverlayVisible(quickOverlayVisible)
 
     function askRestart() {
         showConfirmDialog(qsTr("Restart needed"),
@@ -271,6 +286,8 @@ Item {
         startRendererBackend = Chiaki.settings.rendererBackend;
         startDirectFrameMapping = Chiaki.settings.directFrameMapping;
         startVSync = Chiaki.settings.vSyncEnabled;
+        if (Chiaki.window)
+            Chiaki.window.setQuickOverlayVisible(quickOverlayVisible);
         if (Chiaki.session)
             stack.replace(stack.get(0), streamViewComponent, {}, StackView.Immediate);
         else if (Chiaki.autoConnect)
@@ -293,6 +310,7 @@ Item {
     }
 
     Pane {
+        id: backgroundPane
         anchors.fill: parent
         visible: !Chiaki.session || (!Chiaki.window.hasVideo && !Chiaki.window.keepVideo)
     }
@@ -459,6 +477,7 @@ Item {
         }
     }
     Rectangle {
+        id: errorToastRect
         anchors {
             bottom: parent.bottom
             horizontalCenter: parent.horizontalCenter

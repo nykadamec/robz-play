@@ -275,11 +275,18 @@ class Settings : public QObject
 		void SetFrameGenEnabled(bool enabled)      { settings.setValue("settings/framegen_enabled", enabled); }
 		int GetFrameGenFlowDivisor() const
 		{
-			// Robz Play: High (full resolution) by default
-			const int divisor = settings.value("settings/framegen_flow_divisor", 1).toInt();
-			return (divisor == 1 || divisor == 2 || divisor == 4) ? divisor : 1;
+			// 0 = Auto (Smart 60/120 FPS Lock), 1 = High (100%), 2 = Balanced (50%), 3 = Performance (33%), 4 = Fast (25%)
+#if defined(Q_OS_MACOS)
+			const int default_div = 0;
+#else
+			const int default_div = 1;
+#endif
+			const int divisor = settings.value("settings/framegen_flow_divisor", default_div).toInt();
+			return (divisor >= 0 && divisor <= 4) ? divisor : default_div;
 		}
-		void SetFrameGenFlowDivisor(int divisor)   { settings.setValue("settings/framegen_flow_divisor", divisor); }
+		void SetFrameGenFlowDivisor(int divisor)   { settings.setValue("settings/framegen_flow_divisor", qBound(0, divisor, 4)); }
+		bool GetFrameGenAutoScale() const          { return settings.value("settings/framegen_auto_scale", true).toBool(); }
+		void SetFrameGenAutoScale(bool enabled)    { settings.setValue("settings/framegen_auto_scale", enabled); }
 		int GetFrameGenTargetFps() const
 		{
 			return settings.value("settings/framegen_target_fps", 60).toInt() >= 100 ? 120 : 60;
@@ -299,6 +306,30 @@ class Settings : public QObject
 		// Robz Play: sharpening on High and the FPS counter on by default
 		int GetSharpening() const                  { return qBound(0, settings.value("settings/sharpening", 3).toInt(), 3); }
 		void SetSharpening(int level)              { settings.setValue("settings/sharpening", qBound(0, level, 3)); }
+		// Picture enhancement technology:
+		//   0 = Off (Plain), 1 = Adaptive Sharpen, 2 = AMD FidelityFX CAS,
+		//   3 = Cinema Vivid (CAS + Vibrance + Clarity), 4 = Ultra Crisp (FSRCNNX + CAS + Deband)
+		int GetPictureEnhanceMode() const          { return qBound(0, settings.value("settings/picture_enhance_mode", 2).toInt(), 4); }
+		void SetPictureEnhanceMode(int mode)       { settings.setValue("settings/picture_enhance_mode", qBound(0, mode, 4)); }
+		// Color vibrance & clarity boost: 0 off, 1 subtle, 2 vivid
+		int GetVibranceLevel() const               { return qBound(0, settings.value("settings/vibrance_level", 0).toInt(), 2); }
+		void SetVibranceLevel(int level)           { settings.setValue("settings/vibrance_level", qBound(0, level, 2)); }
+		// Debanding (smooths sky/shadow compression gradients): on by default for cleaner streams
+		bool GetDebandQuickEnabled() const         { return settings.value("settings/deband_quick_enabled", true).toBool(); }
+		void SetDebandQuickEnabled(bool enabled)   { settings.setValue("settings/deband_quick_enabled", enabled); }
+		// macOS AWDL / AirDrop Stutter Guard
+		bool GetMacAwdlGuardEnabled() const        { return settings.value("settings/mac_awdl_guard", false).toBool(); }
+		void SetMacAwdlGuardEnabled(bool enabled)  { settings.setValue("settings/mac_awdl_guard", enabled); }
+		// macOS Vulkan / Metal ICD driver selection:
+		//   "auto"        = Auto (KosmicKrisp if installed, else MoltenVK)
+		//   "moltenvk"    = MoltenVK (Metal 3/4 via Khronos MoltenVK)
+		//   "kosmickrisp" = KosmicKrisp (LunarG / Mesa Vulkan 1.4 -> Metal 4)
+		//   "system"      = System Default (all installed ICDs / custom VK_DRIVER_FILES)
+		QString GetMacVulkanDriver() const         { return settings.value("settings/mac_vulkan_driver", "auto").toString(); }
+		void SetMacVulkanDriver(const QString &d)  { settings.setValue("settings/mac_vulkan_driver", d); }
+		// MoltenVK Metal Argument Buffers (Metal 3+ fast path on Apple Silicon)
+		bool GetMoltenVkArgBuffers() const         { return settings.value("settings/mvk_arg_buffers", true).toBool(); }
+		void SetMoltenVkArgBuffers(bool enabled)   { settings.setValue("settings/mvk_arg_buffers", enabled); }
 		bool GetShowFpsCounter() const             { return settings.value("settings/show_fps_counter", true).toBool(); }
 		void SetShowFpsCounter(bool enabled)       { settings.setValue("settings/show_fps_counter", enabled); }
 		QString GetFrameGenModel() const           { return settings.value("settings/framegen_model", "rife-v4.6").toString(); }

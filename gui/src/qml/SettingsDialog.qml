@@ -724,16 +724,50 @@ DialogView {
 
                         C.ComboBox {
                             Layout.preferredWidth: 400
-                            model: [qsTr("Fast (quarter resolution)"), qsTr("Balanced (half resolution)"), qsTr("High (full resolution)")]
-                            currentIndex: Chiaki.settings.frameGenFlowDivisor === 4 ? 0 : (Chiaki.settings.frameGenFlowDivisor === 1 ? 2 : 1)
-                            onActivated: index => Chiaki.settings.frameGenFlowDivisor = [4, 2, 1][index]
+                            model: [
+                                qsTr("Auto (Smart 60/120 FPS Lock)"),
+                                qsTr("Fast (quarter resolution, 25%)"),
+                                qsTr("Performance (third resolution, 33%)"),
+                                qsTr("Balanced (half resolution, 50%)"),
+                                qsTr("High (full resolution, 100%)")
+                            ]
+                            currentIndex: {
+                                switch (Chiaki.settings.frameGenFlowDivisor) {
+                                case 0: return 0;
+                                case 4: return 1;
+                                case 3: return 2;
+                                case 2: return 3;
+                                case 1: return 4;
+                                default: return 0;
+                                }
+                            }
+                            onActivated: index => Chiaki.settings.frameGenFlowDivisor = [0, 4, 3, 2, 1][index]
                         }
 
                         Label {
                             Layout.alignment: Qt.AlignLeft
                             color: "#A08F84"
                             font.pixelSize: 14
-                            text: qsTr("(High)")
+                            text: qsTr("(Auto)")
+                        }
+
+                        Label {
+                            Layout.alignment: Qt.AlignLeft
+                            text: qsTr("Smart GPU Auto-Scale (60 FPS Lock):")
+                        }
+
+                        C.CheckBox {
+                            checked: Chiaki.settings.frameGenAutoScale
+                            onToggled: Chiaki.settings.frameGenAutoScale = !Chiaki.settings.frameGenAutoScale
+                        }
+
+                        Label {
+                            Layout.alignment: Qt.AlignLeft
+                            Layout.maximumWidth: 420
+                            color: "#A08F84"
+                            font.pixelSize: 14
+                            wrapMode: Text.Wrap
+                            text: qsTr("(On) Automatically lowers motion resolution if GPU exceeds frame time budget.")
                         }
 
                         Label {
@@ -808,6 +842,67 @@ DialogView {
                             color: "#A08F84"
                             font.pixelSize: 14
                             text: qsTr("(High)")
+                        }
+
+                        Label {
+                            Layout.alignment: Qt.AlignLeft
+                            text: qsTr("Image Enhancement Technology:")
+                        }
+
+                        C.ComboBox {
+                            Layout.preferredWidth: 400
+                            model: [
+                                qsTr("Off (Plain Stream)"),
+                                qsTr("Robz Adaptive Luma Sharpen"),
+                                qsTr("AMD FidelityFX CAS (Contrast Adaptive)"),
+                                qsTr("Cinema Vivid (CAS + Vibrance + Clarity)"),
+                                qsTr("Ultra Crisp (FSRCNNX x2 AI + CAS + Deband)")
+                            ]
+                            currentIndex: Chiaki.settings.pictureEnhanceMode
+                            onActivated: index => Chiaki.settings.pictureEnhanceMode = index
+                        }
+
+                        Label {
+                            Layout.alignment: Qt.AlignLeft
+                            color: "#A08F84"
+                            font.pixelSize: 14
+                            text: qsTr("(AMD CAS)")
+                        }
+
+                        Label {
+                            Layout.alignment: Qt.AlignLeft
+                            text: qsTr("Color Vibrance & Local Clarity:")
+                        }
+
+                        C.ComboBox {
+                            Layout.preferredWidth: 400
+                            model: [qsTr("Off"), qsTr("Subtle"), qsTr("Vivid")]
+                            currentIndex: Chiaki.settings.vibranceLevel
+                            onActivated: index => Chiaki.settings.vibranceLevel = index
+                        }
+
+                        Label {
+                            Layout.alignment: Qt.AlignLeft
+                            color: "#A08F84"
+                            font.pixelSize: 14
+                            text: qsTr("(Off)")
+                        }
+
+                        Label {
+                            Layout.alignment: Qt.AlignLeft
+                            text: qsTr("Quick Debanding (Smooth Sky & Shadows):")
+                        }
+
+                        C.CheckBox {
+                            checked: Chiaki.settings.debandQuickEnabled
+                            onToggled: Chiaki.settings.debandQuickEnabled = !Chiaki.settings.debandQuickEnabled
+                        }
+
+                        Label {
+                            Layout.alignment: Qt.AlignLeft
+                            color: "#A08F84"
+                            font.pixelSize: 14
+                            text: qsTr("(On)")
                         }
 
                         Label {
@@ -1388,7 +1483,9 @@ DialogView {
 
                     C.ComboBox {
                         Layout.preferredWidth: 400
-                        model: [qsTr("Vulkan"), qsTr("OpenGL")]
+                        model: Chiaki.macOs
+                            ? [qsTr("Vulkan over Apple Metal (Recommended)"), qsTr("OpenGL (Legacy Compatibility)")]
+                            : [qsTr("Vulkan"), qsTr("OpenGL")]
                         currentIndex: Chiaki.settings.rendererBackend
                         onActivated: (index) => {
                             if (index === Chiaki.settings.rendererBackend)
@@ -1402,7 +1499,74 @@ DialogView {
                         Layout.alignment: Qt.AlignLeft
                         color: "#A08F84"
                         font.pixelSize: 14
-                        text: qsTr("(Vulkan)")
+                        text: Chiaki.macOs ? qsTr("(Metal / Vulkan)") : qsTr("(Vulkan)")
+                    }
+
+                    Label {
+                        Layout.alignment: Qt.AlignLeft
+                        text: qsTr("macOS Vulkan → Metal Driver:")
+                        visible: Chiaki.macOs && Chiaki.settings.rendererBackend == 0
+                    }
+
+                    C.ComboBox {
+                        Layout.preferredWidth: 400
+                        visible: Chiaki.macOs && Chiaki.settings.rendererBackend == 0
+                        model: [
+                            qsTr("Auto (KosmicKrisp Metal 4 if installed, else MoltenVK)"),
+                            qsTr("MoltenVK 1.4 (Khronos Vulkan → Metal)"),
+                            qsTr("KosmicKrisp (LunarG Mesa Vulkan 1.4 → Metal 4)"),
+                            qsTr("System Default (VK_DRIVER_FILES / All ICDs)")
+                        ]
+                        currentIndex: {
+                            switch (Chiaki.settings.macVulkanDriver) {
+                            case "moltenvk": return 1;
+                            case "kosmickrisp": return 2;
+                            case "system": return 3;
+                            default: return 0;
+                            }
+                        }
+                        onActivated: (index) => {
+                            const vals = ["auto", "moltenvk", "kosmickrisp", "system"];
+                            if (vals[index] === Chiaki.settings.macVulkanDriver)
+                                return;
+                            Chiaki.settings.macVulkanDriver = vals[index];
+                            root.restartPending = true;
+                        }
+                    }
+
+                    Label {
+                        Layout.alignment: Qt.AlignLeft
+                        Layout.maximumWidth: 420
+                        color: "#A08F84"
+                        font.pixelSize: 13
+                        wrapMode: Text.Wrap
+                        visible: Chiaki.macOs && Chiaki.settings.rendererBackend == 0
+                        text: qsTr("Detected: %1").arg(Chiaki.settings.availableMacVulkanDrivers.length > 0 ? Chiaki.settings.availableMacVulkanDrivers.join(", ") : qsTr("None"))
+                    }
+
+                    Label {
+                        Layout.alignment: Qt.AlignLeft
+                        text: qsTr("MoltenVK Metal 3 Argument Buffers:")
+                        visible: Chiaki.macOs && Chiaki.settings.rendererBackend == 0
+                    }
+
+                    C.CheckBox {
+                        checked: Chiaki.settings.moltenVkArgBuffers
+                        onToggled: {
+                            Chiaki.settings.moltenVkArgBuffers = checked;
+                            root.restartPending = true;
+                        }
+                        visible: Chiaki.macOs && Chiaki.settings.rendererBackend == 0
+                    }
+
+                    Label {
+                        Layout.alignment: Qt.AlignLeft
+                        Layout.maximumWidth: 420
+                        color: "#A08F84"
+                        font.pixelSize: 13
+                        wrapMode: Text.Wrap
+                        visible: Chiaki.macOs && Chiaki.settings.rendererBackend == 0
+                        text: qsTr("(On) Faster Metal 3 descriptor binding on Apple Silicon (requires restart).")
                     }
 
                     Label {

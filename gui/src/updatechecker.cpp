@@ -19,7 +19,11 @@
 namespace
 {
 const char *const DEFAULT_FEED = "https://api.github.com/repos/kutsalkiremitci/robz-play/releases/latest";
+#ifdef Q_OS_MACOS
+const char *const INSTALLER_NAME = "RobzPlay.dmg";
+#else
 const char *const INSTALLER_NAME = "RobzPlay-Setup.exe";
+#endif
 const int FIRST_CHECK_MS = 5 * 1000;
 const int CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
 

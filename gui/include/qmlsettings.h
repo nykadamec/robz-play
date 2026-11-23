@@ -34,11 +34,19 @@ class QmlSettings : public QObject
     Q_PROPERTY(bool frameGenEnabled READ frameGenEnabled WRITE setFrameGenEnabled NOTIFY frameGenEnabledChanged)
     Q_PROPERTY(bool showFpsCounter READ showFpsCounter WRITE setShowFpsCounter NOTIFY showFpsCounterChanged)
     Q_PROPERTY(int sharpening READ sharpening WRITE setSharpening NOTIFY sharpeningChanged)
+    Q_PROPERTY(int pictureEnhanceMode READ pictureEnhanceMode WRITE setPictureEnhanceMode NOTIFY pictureEnhanceModeChanged)
+    Q_PROPERTY(int vibranceLevel READ vibranceLevel WRITE setVibranceLevel NOTIFY vibranceLevelChanged)
+    Q_PROPERTY(bool debandQuickEnabled READ debandQuickEnabled WRITE setDebandQuickEnabled NOTIFY debandQuickEnabledChanged)
+    Q_PROPERTY(bool macAwdlGuardEnabled READ macAwdlGuardEnabled WRITE setMacAwdlGuardEnabled NOTIFY macAwdlGuardEnabledChanged)
+    Q_PROPERTY(QString macVulkanDriver READ macVulkanDriver WRITE setMacVulkanDriver NOTIFY macVulkanDriverChanged)
+    Q_PROPERTY(bool moltenVkArgBuffers READ moltenVkArgBuffers WRITE setMoltenVkArgBuffers NOTIFY moltenVkArgBuffersChanged)
+    Q_PROPERTY(QStringList availableMacVulkanDrivers READ availableMacVulkanDrivers CONSTANT)
     Q_PROPERTY(QString language READ language WRITE setLanguage NOTIFY languageChanged)
     Q_PROPERTY(int frameGenTargetFps READ frameGenTargetFps WRITE setFrameGenTargetFps NOTIFY frameGenTargetFpsChanged)
     Q_PROPERTY(bool frameGenProtectStatic READ frameGenProtectStatic WRITE setFrameGenProtectStatic NOTIFY frameGenProtectStaticChanged)
     Q_PROPERTY(bool frameGenCompare READ frameGenCompare WRITE setFrameGenCompare NOTIFY frameGenCompareChanged)
     Q_PROPERTY(int frameGenFlowDivisor READ frameGenFlowDivisor WRITE setFrameGenFlowDivisor NOTIFY frameGenFlowDivisorChanged)
+    Q_PROPERTY(bool frameGenAutoScale READ frameGenAutoScale WRITE setFrameGenAutoScale NOTIFY frameGenAutoScaleChanged)
     Q_PROPERTY(bool streamerMode READ streamerMode WRITE setStreamerMode NOTIFY streamerModeChanged)
     Q_PROPERTY(float hapticOverride READ hapticOverride WRITE setHapticOverride NOTIFY hapticOverrideChanged)
     Q_PROPERTY(int displayTargetContrast READ displayTargetContrast WRITE setDisplayTargetContrast NOTIFY displayTargetContrastChanged)
@@ -194,6 +202,19 @@ public:
     void setShowFpsCounter(bool enabled);
     int sharpening() const;
     void setSharpening(int level);
+    int pictureEnhanceMode() const;
+    void setPictureEnhanceMode(int mode);
+    int vibranceLevel() const;
+    void setVibranceLevel(int level);
+    bool debandQuickEnabled() const;
+    void setDebandQuickEnabled(bool enabled);
+    bool macAwdlGuardEnabled() const;
+    void setMacAwdlGuardEnabled(bool enabled);
+    QString macVulkanDriver() const;
+    void setMacVulkanDriver(const QString &driver);
+    bool moltenVkArgBuffers() const;
+    void setMoltenVkArgBuffers(bool enabled);
+    QStringList availableMacVulkanDrivers() const;
 
     QString language() const;
     void setLanguage(const QString &language);
@@ -205,6 +226,8 @@ public:
     void setFrameGenProtectStatic(bool enabled);
     int frameGenFlowDivisor() const;
     void setFrameGenFlowDivisor(int divisor);
+    bool frameGenAutoScale() const;
+    void setFrameGenAutoScale(bool enabled);
 
     bool streamerMode() const;
     void setStreamerMode(bool enabled);
@@ -684,11 +707,18 @@ signals:
     void frameGenEnabledChanged();
     void showFpsCounterChanged();
     void sharpeningChanged();
+    void pictureEnhanceModeChanged();
+    void vibranceLevelChanged();
+    void debandQuickEnabledChanged();
+    void macAwdlGuardEnabledChanged();
+    void macVulkanDriverChanged();
+    void moltenVkArgBuffersChanged();
     void languageChanged();
     void frameGenTargetFpsChanged();
     void frameGenProtectStaticChanged();
     void frameGenCompareChanged();
     void frameGenFlowDivisorChanged();
+    void frameGenAutoScaleChanged();
     void streamerModeChanged();
     void fpsLocalPS4Changed();
     void fpsRemotePS4Changed();

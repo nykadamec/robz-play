@@ -355,7 +355,11 @@ static void ApplyRobzPlayDefaults(QSettings &s)
 // picture sharpening on High and the FPS counter on.
 static void ApplyRobzPlayDefaults2(QSettings &s)
 {
+#if defined(Q_OS_MACOS)
+	s.setValue("settings/framegen_flow_divisor", 2);
+#else
 	s.setValue("settings/framegen_flow_divisor", 1);
+#endif
 	s.setValue("settings/sharpening", 3);
 	s.setValue("settings/show_fps_counter", true);
 }
@@ -520,15 +524,83 @@ int real_main(int argc, char *argv[])
 	// live resize, but our swapchain presents from the render thread, so every resize step
 	// stalled and resizing the window became very slow.
 	qputenv("QT_MTL_NO_TRANSACTION", "1");
-	// The Vulkan loader also reads Homebrew's driver folder, so with Homebrew's molten-vk installed
-	// the app loaded a second MoltenVK beside its own and listed every GPU twice. Use only the
-	// bundled one. Setting any of these variables yourself keeps your choice.
-	const QString moltenvk_icd = QFileInfo(QString::fromLocal8Bit(argv[0])).canonicalPath()
-		+ "/../Resources/vulkan/icd.d/MoltenVK_icd.json";
-	if(QFileInfo::exists(moltenvk_icd) && !qEnvironmentVariableIsSet("VK_DRIVER_FILES")
+	// Read saved macOS Vulkan/Metal driver preference early before Vulkan or Qt initializes.
+	const QString app_bin_dir = QFileInfo(QString::fromLocal8Bit(argv[0])).canonicalPath();
+	QSettings early_settings(QGuiApplication::organizationName(), QGuiApplication::applicationName());
+	const QString mac_vk_driver = early_settings.value("settings/mac_vulkan_driver", "auto").toString();
+	const bool mvk_arg_buffers = early_settings.value("settings/mvk_arg_buffers", true).toBool();
+
+	if(!qEnvironmentVariableIsSet("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"))
+		qputenv("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", mvk_arg_buffers ? "1" : "0");
+
+	auto findFirstExisting = [](const QStringList &paths) -> QString {
+		for(const QString &p : paths)
+		{
+			if(QFileInfo::exists(p))
+				return QFileInfo(p).canonicalFilePath();
+		}
+		return QString();
+	};
+
+	const QString moltenvk_path = findFirstExisting({
+		app_bin_dir + "/../Resources/vulkan/icd.d/MoltenVK_icd.json",
+		QStringLiteral("/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json"),
+		QStringLiteral("/opt/homebrew/opt/molten-vk/etc/vulkan/icd.d/MoltenVK_icd.json"),
+		QStringLiteral("/usr/local/etc/vulkan/icd.d/MoltenVK_icd.json")
+	});
+
+	QStringList kosmic_candidates = {
+		app_bin_dir + "/../Resources/vulkan/icd.d/kosmickrisp_mesa_icd.json",
+		QStringLiteral("/opt/homebrew/etc/vulkan/icd.d/kosmickrisp_mesa_icd.json"),
+		QStringLiteral("/usr/local/share/vulkan/icd.d/kosmickrisp_mesa_icd.json")
+	};
+	{
+		const QDir sdk_root(QDir::homePath() + "/VulkanSDK");
+		if(sdk_root.exists())
+		{
+			for(const QString &ver : sdk_root.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::Reversed))
+				kosmic_candidates.append(sdk_root.filePath(ver + "/macOS/share/vulkan/icd.d/kosmickrisp_mesa_icd.json"));
+		}
+	}
+	const QString kosmickrisp_path = findFirstExisting(kosmic_candidates);
+
+	if(mac_vk_driver != QLatin1String("system")
+		&& !qEnvironmentVariableIsSet("VK_DRIVER_FILES")
 		&& !qEnvironmentVariableIsSet("VK_ICD_FILENAMES") && !qEnvironmentVariableIsSet("VK_LOADER_DRIVERS_SELECT")
 		&& !qEnvironmentVariableIsSet("VK_LOADER_DRIVERS_DISABLE"))
-		qputenv("VK_DRIVER_FILES", QFileInfo(moltenvk_icd).canonicalFilePath().toUtf8());
+	{
+		QString chosen_icd;
+		if(mac_vk_driver == QLatin1String("kosmickrisp"))
+			chosen_icd = !kosmickrisp_path.isEmpty() ? kosmickrisp_path : moltenvk_path;
+		else if(mac_vk_driver == QLatin1String("moltenvk"))
+			chosen_icd = moltenvk_path;
+		else // "auto": prefer KosmicKrisp (Metal 4 / Vulkan 1.4) when installed, else MoltenVK
+			chosen_icd = !kosmickrisp_path.isEmpty() ? kosmickrisp_path : moltenvk_path;
+
+		if(!chosen_icd.isEmpty())
+		{
+			qputenv("VK_DRIVER_FILES", chosen_icd.toUtf8());
+			fprintf(stderr, "Robz Play macOS Vulkan ICD: %s (mode: %s)\n",
+				chosen_icd.toUtf8().constData(), mac_vk_driver.toUtf8().constData());
+		}
+	}
+	if(!qEnvironmentVariableIsSet("QT_VULKAN_LIB"))
+	{
+		const QStringList vulkan_lib_candidates = {
+			app_bin_dir + "/../Frameworks/libvulkan.1.dylib",
+			QStringLiteral("/opt/homebrew/opt/vulkan-loader/lib/libvulkan.1.dylib"),
+			QStringLiteral("/opt/homebrew/lib/libvulkan.1.dylib"),
+			QStringLiteral("/usr/local/lib/libvulkan.1.dylib")
+		};
+		for(const QString &vulkan_lib : vulkan_lib_candidates)
+		{
+			if(QFileInfo::exists(vulkan_lib))
+			{
+				qputenv("QT_VULKAN_LIB", QFileInfo(vulkan_lib).canonicalFilePath().toUtf8());
+				break;
+			}
+		}
+	}
 #endif
 #if defined(Q_OS_LINUX)
 	if(qEnvironmentVariableIsSet("FLATPAK_ID"))

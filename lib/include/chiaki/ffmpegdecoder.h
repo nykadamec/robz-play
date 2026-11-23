@@ -6,6 +6,7 @@
 #include <chiaki/thread.h>
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,6 +14,8 @@ extern "C" {
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/rational.h>
+
+#define CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY 3
 
 typedef struct chiaki_ffmpeg_decoder_t ChiakiFfmpegDecoder;
 
@@ -50,6 +53,10 @@ struct chiaki_ffmpeg_decoder_t
 	double synthetic_candidate_duration_us;
 	uint64_t synthetic_last_sample_time_us;
 	uint8_t synthetic_candidate_count;
+	AVFrame *decoded_queue[CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY];
+	bool decoded_queue_recovered[CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY];
+	size_t decoded_queue_head;
+	size_t decoded_queue_count;
 };
 
 CHIAKI_EXPORT ChiakiErrorCode chiaki_ffmpeg_decoder_init(ChiakiFfmpegDecoder *decoder, ChiakiLog *log,

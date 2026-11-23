@@ -11,7 +11,11 @@
 //  - the previous frame stays on the GPU, so each source frame is uploaded once
 
 #include "robzfg/rife_interpolator.h"
+#ifdef __APPLE__
+#include "rife_metal.h"
+#endif
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -291,6 +295,10 @@ struct RifeInterpolator::Impl
 {
 	bool inited = false;
 	std::string gpu_name;
+#ifdef __APPLE__
+	std::unique_ptr<MetalRifeBackend> metal;
+	bool use_metal = false;
+#endif
 
 	ncnn::VulkanDevice *vkdev = nullptr;
 	ncnn::Net flownet;
@@ -328,6 +336,13 @@ struct RifeInterpolator::Impl
 	float fields_time = -1.f;
 	bool fields_valid = false;
 
+	// reusable GPU buffers (timestep input + synthesized NV12 outputs)
+	ncnn::VkMat timestep_gpu;
+	float timestep_value = -1.f;
+	ncnn::VkMat out_y_gpu;
+	ncnn::VkMat out_uv_gpu;
+	bool pending_direct = false;
+
 	std::vector<uint32_t> out_y;
 	std::vector<uint32_t> out_uv;
 
@@ -353,6 +368,11 @@ struct RifeInterpolator::Impl
 		prev.release();
 		cur.release();
 		pending = false;
+		pending_direct = false;
+		timestep_gpu.release();
+		timestep_value = -1.f;
+		out_y_gpu.release();
+		out_uv_gpu.release();
 		dropFields();
 	}
 
@@ -366,15 +386,20 @@ struct RifeInterpolator::Impl
 	// Records "upload the pending NV12 frame and prepare its network tensor" into `cur`.
 	bool recordPendingUpload(ncnn::VkCompute &cmd)
 	{
-		ncnn::Mat y_cpu(w * h / 4, (void *)pending_y.data(), (size_t)4u);
-		ncnn::Mat uv_cpu(w * h / 8, (void *)pending_uv.data(), (size_t)4u);
-		cur.release();
-		cmd.record_clone(y_cpu, cur.y, opt);
-		cmd.record_clone(uv_cpu, cur.uv, opt);
-		cur.net.create(wp, hp, 3, tensor_elemsize, 1, blob_allocator);
+		if(!pending_direct)
+		{
+			ncnn::Mat y_cpu(w * h / 4, (void *)pending_y.data(), (size_t)4u);
+			ncnn::Mat uv_cpu(w * h / 8, (void *)pending_uv.data(), (size_t)4u);
+			cur.release();
+			cmd.record_clone(y_cpu, cur.y, opt);
+			cmd.record_clone(uv_cpu, cur.uv, opt);
+		}
+		if(cur.net.empty() || cur.net.dims != 3 || cur.net.w != wp || cur.net.h != hp || cur.net.c != 3 || cur.net.elemsize != tensor_elemsize)
+			cur.net.create(wp, hp, 3, tensor_elemsize, 1, blob_allocator);
 		if(cur.y.empty() || cur.uv.empty() || cur.net.empty())
 		{
 			cur.release();
+			pending_direct = false;
 			return false;
 		}
 
@@ -398,6 +423,7 @@ struct RifeInterpolator::Impl
 		cmd.record_pipeline(nv12_to_net, bindings, constants, dispatchShape(wp, hp));
 
 		pending = false;
+		pending_direct = false;
 		cur.valid = true;
 		return true;
 	}
@@ -409,6 +435,14 @@ RifeInterpolator::~RifeInterpolator() = default;
 
 std::vector<GpuDevice> RifeInterpolator::enumerateGpus()
 {
+#ifdef __APPLE__
+	if(MetalRifeBackend::isEnabled())
+	{
+		std::vector<GpuDevice> metal_devices = MetalRifeBackend::enumerateGpus();
+		if(!metal_devices.empty())
+			return metal_devices;
+	}
+#endif
 	ensureGpuInstance();
 	std::vector<GpuDevice> devices;
 	const int count = ncnn::get_gpu_count();
@@ -431,11 +465,30 @@ bool RifeInterpolator::init(const Config &config, std::string *error)
 		setError(error, "already initialised");
 		return false;
 	}
-	if(config.flow_divisor != 1 && config.flow_divisor != 2 && config.flow_divisor != 4)
+	if(config.flow_divisor != 1 && config.flow_divisor != 2 && config.flow_divisor != 3 && config.flow_divisor != 4)
 	{
-		setError(error, "flow_divisor must be 1, 2 or 4");
+		setError(error, "flow_divisor must be 1, 2, 3 or 4");
 		return false;
 	}
+
+#ifdef __APPLE__
+	if(MetalRifeBackend::isEnabled())
+	{
+		auto metal = std::make_unique<MetalRifeBackend>();
+		std::string metal_error;
+		if(metal->init(config, &metal_error))
+		{
+			d->metal = std::move(metal);
+			d->use_metal = true;
+			d->divisor = config.flow_divisor;
+			d->gpu_name = d->metal->gpuName();
+			d->inited = true;
+			return true;
+		}
+		if(error)
+			*error = metal_error;
+	}
+#endif
 
 	ensureGpuInstance();
 	const int gpu_count = ncnn::get_gpu_count();
@@ -472,7 +525,11 @@ bool RifeInterpolator::init(const Config &config, std::string *error)
 	opt.use_vulkan_compute = true;
 	opt.use_fp16_packed = true;
 	opt.use_fp16_storage = true;
+#ifdef __APPLE__
+	opt.use_fp16_arithmetic = true;
+#else
 	opt.use_fp16_arithmetic = false;
+#endif
 	opt.use_int8_storage = true;
 
 	d->flownet.opt = opt;
@@ -554,16 +611,63 @@ std::string RifeInterpolator::gpuName() const
 
 void RifeInterpolator::reset()
 {
+#ifdef __APPLE__
+	if(d->use_metal)
+	{
+		d->metal->reset();
+		return;
+	}
+#endif
 	d->releaseFrames();
+}
+
+bool RifeInterpolator::setFlowDivisor(int flow_divisor)
+{
+#ifdef __APPLE__
+	if(d->use_metal)
+	{
+		if(!d->metal->setFlowDivisor(flow_divisor))
+			return false;
+		d->divisor = flow_divisor;
+		return true;
+	}
+#endif
+	if(flow_divisor != 1 && flow_divisor != 2 && flow_divisor != 3 && flow_divisor != 4)
+		return false;
+	if(d->divisor == flow_divisor)
+		return true;
+	d->divisor = flow_divisor;
+	d->releaseFrames();
+	if(d->w > 0 && d->h > 0)
+	{
+		d->nw = (d->w + d->divisor - 1) / d->divisor;
+		d->nh = (d->h + d->divisor - 1) / d->divisor;
+		d->wp = (d->nw + d->padding - 1) / d->padding * d->padding;
+		d->hp = (d->nh + d->padding - 1) / d->padding * d->padding;
+	}
+	return true;
+}
+
+int RifeInterpolator::flowDivisor() const
+{
+	return d->divisor;
 }
 
 bool RifeInterpolator::ready() const
 {
+#ifdef __APPLE__
+	if(d->use_metal)
+		return d->inited && d->metal->ready();
+#endif
 	return d->inited && d->prev.valid && (d->cur.valid || d->pending);
 }
 
 bool RifeInterpolator::push(const Nv12View &frame, const ColorInfo &color, std::string *error)
 {
+#ifdef __APPLE__
+	if(d->use_metal)
+		return d->metal->push(frame, color, error);
+#endif
 	if(!d->inited)
 	{
 		setError(error, "not initialised");
@@ -604,22 +708,71 @@ bool RifeInterpolator::push(const Nv12View &frame, const ColorInfo &color, std::
 	}
 
 	if(d->cur.valid)
-		d->prev = d->cur;
-	d->cur = GpuFrame();
+		std::swap(d->prev, d->cur);
+	d->cur.valid = false;
 	d->dropFields(); // a new pair needs a new motion estimate
 
+	const int y_words = d->w * d->h / 4;
+	const int uv_words = d->w * d->h / 8;
+	if(d->cur.y.empty() || d->cur.y.dims != 1 || d->cur.y.w != y_words || d->cur.y.elemsize != 4u)
+		d->cur.y.create(y_words, (size_t)4u, 1, d->blob_allocator);
+	if(d->cur.uv.empty() || d->cur.uv.dims != 1 || d->cur.uv.w != uv_words || d->cur.uv.elemsize != 4u)
+		d->cur.uv.create(uv_words, (size_t)4u, 1, d->blob_allocator);
+
+	const bool direct_upload = !d->cur.y.empty() && !d->cur.uv.empty()
+		&& d->cur.y.allocator && d->cur.y.allocator->mappable
+		&& d->cur.uv.allocator && d->cur.uv.allocator->mappable;
+	if(direct_upload)
+	{
+		uint8_t *dst_y = static_cast<uint8_t *>(d->cur.y.mapped_ptr());
+		if(frame.y_stride == d->w)
+			memcpy(dst_y, frame.y, (size_t)d->w * d->h);
+		else
+			for(int row = 0; row < d->h; row++)
+				memcpy(dst_y + (size_t)row * d->w, frame.y + (size_t)row * frame.y_stride, (size_t)d->w);
+
+		uint8_t *dst_uv = static_cast<uint8_t *>(d->cur.uv.mapped_ptr());
+		if(frame.uv_stride == d->w)
+			memcpy(dst_uv, frame.uv, (size_t)d->w * (d->h / 2));
+		else
+			for(int row = 0; row < d->h / 2; row++)
+				memcpy(dst_uv + (size_t)row * d->w, frame.uv + (size_t)row * frame.uv_stride, (size_t)d->w);
+
+		d->cur.y.allocator->flush(d->cur.y.data);
+		d->cur.uv.allocator->flush(d->cur.uv.data);
+		d->cur.y.data->access_flags = VK_ACCESS_HOST_WRITE_BIT;
+		d->cur.y.data->stage_flags = VK_PIPELINE_STAGE_HOST_BIT;
+		d->cur.uv.data->access_flags = VK_ACCESS_HOST_WRITE_BIT;
+		d->cur.uv.data->stage_flags = VK_PIPELINE_STAGE_HOST_BIT;
+		d->pending = true;
+		d->pending_direct = true;
+		return true;
+	}
+
+	d->cur.release();
 	uint8_t *dst_y = (uint8_t *)d->pending_y.data();
-	for(int row = 0; row < d->h; row++)
-		memcpy(dst_y + (size_t)row * d->w, frame.y + (size_t)row * frame.y_stride, (size_t)d->w);
+	if(frame.y_stride == d->w)
+		memcpy(dst_y, frame.y, (size_t)d->w * d->h);
+	else
+		for(int row = 0; row < d->h; row++)
+			memcpy(dst_y + (size_t)row * d->w, frame.y + (size_t)row * frame.y_stride, (size_t)d->w);
 	uint8_t *dst_uv = (uint8_t *)d->pending_uv.data();
-	for(int row = 0; row < d->h / 2; row++)
-		memcpy(dst_uv + (size_t)row * d->w, frame.uv + (size_t)row * frame.uv_stride, (size_t)d->w);
+	if(frame.uv_stride == d->w)
+		memcpy(dst_uv, frame.uv, (size_t)d->w * (d->h / 2));
+	else
+		for(int row = 0; row < d->h / 2; row++)
+			memcpy(dst_uv + (size_t)row * d->w, frame.uv + (size_t)row * frame.uv_stride, (size_t)d->w);
 	d->pending = true;
+	d->pending_direct = false;
 	return true;
 }
 
 bool RifeInterpolator::interpolate(float t, const Nv12Mut &out, InterpolateTiming *timing, std::string *error, float field_time)
 {
+#ifdef __APPLE__
+	if(d->use_metal)
+		return d->metal->interpolate(t, out, timing, error, field_time);
+#endif
 	const auto start = std::chrono::steady_clock::now();
 
 	if(!ready())
@@ -653,24 +806,29 @@ bool RifeInterpolator::interpolate(float t, const Nv12Mut &out, InterpolateTimin
 	{
 		d->dropFields();
 
-		ncnn::VkMat timestep_gpu;
-		timestep_gpu.create(d->wp, d->hp, 1, d->tensor_elemsize, 1, d->blob_allocator);
-		if(timestep_gpu.empty())
+		const bool timestep_reallocated = d->timestep_gpu.empty() || d->timestep_gpu.dims != 3
+			|| d->timestep_gpu.w != d->wp || d->timestep_gpu.h != d->hp || d->timestep_gpu.c != 1
+			|| d->timestep_gpu.elemsize != d->tensor_elemsize;
+		if(timestep_reallocated)
+			d->timestep_gpu.create(d->wp, d->hp, 1, d->tensor_elemsize, 1, d->blob_allocator);
+		if(d->timestep_gpu.empty())
 		{
 			setError(error, "GPU allocation failed");
 			return false;
 		}
+		if(timestep_reallocated || std::abs(d->timestep_value - wanted_field_time) > 0.0001f)
 		{
 			std::vector<ncnn::VkMat> bindings(1);
-			bindings[0] = timestep_gpu;
+			bindings[0] = d->timestep_gpu;
 
 			std::vector<ncnn::vk_constant_type> constants(4);
-			constants[0].i = timestep_gpu.w;
-			constants[1].i = timestep_gpu.h;
-			constants[2].i = (int)timestep_gpu.cstep;
+			constants[0].i = d->timestep_gpu.w;
+			constants[1].i = d->timestep_gpu.h;
+			constants[2].i = (int)d->timestep_gpu.cstep;
 			constants[3].f = wanted_field_time;
 
-			cmd.record_pipeline(d->timestep_fill, bindings, constants, timestep_gpu);
+			cmd.record_pipeline(d->timestep_fill, bindings, constants, d->timestep_gpu);
+			d->timestep_value = wanted_field_time;
 		}
 
 		ncnn::Extractor ex = d->flownet.create_extractor();
@@ -680,7 +838,7 @@ bool RifeInterpolator::interpolate(float t, const Nv12Mut &out, InterpolateTimin
 
 		ex.input("in0", d->prev.net);
 		ex.input("in1", d->cur.net);
-		ex.input("in2", timestep_gpu);
+		ex.input("in2", d->timestep_gpu);
 		if(ex.extract(FIELDS_BLOB, d->fields, cmd) != 0 || d->fields.empty())
 		{
 			d->dropFields();
@@ -698,11 +856,13 @@ bool RifeInterpolator::interpolate(float t, const Nv12Mut &out, InterpolateTimin
 	}
 	const ncnn::VkMat &fields = d->fields;
 
-	ncnn::VkMat y_gpu;
-	ncnn::VkMat uv_gpu;
-	y_gpu.create(d->w * d->h / 4, (size_t)4u, 1, d->blob_allocator);
-	uv_gpu.create(d->w * d->h / 8, (size_t)4u, 1, d->blob_allocator);
-	if(y_gpu.empty() || uv_gpu.empty())
+	const int y_words = d->w * d->h / 4;
+	const int uv_words = d->w * d->h / 8;
+	if(d->out_y_gpu.empty() || d->out_y_gpu.dims != 1 || d->out_y_gpu.w != y_words || d->out_y_gpu.elemsize != 4u)
+		d->out_y_gpu.create(y_words, (size_t)4u, 1, d->blob_allocator);
+	if(d->out_uv_gpu.empty() || d->out_uv_gpu.dims != 1 || d->out_uv_gpu.w != uv_words || d->out_uv_gpu.elemsize != 4u)
+		d->out_uv_gpu.create(uv_words, (size_t)4u, 1, d->blob_allocator);
+	if(d->out_y_gpu.empty() || d->out_uv_gpu.empty())
 	{
 		setError(error, "GPU allocation failed");
 		return false;
@@ -714,8 +874,8 @@ bool RifeInterpolator::interpolate(float t, const Nv12Mut &out, InterpolateTimin
 		bindings[2] = d->prev.uv;
 		bindings[3] = d->cur.y;
 		bindings[4] = d->cur.uv;
-		bindings[5] = y_gpu;
-		bindings[6] = uv_gpu;
+		bindings[5] = d->out_y_gpu;
+		bindings[6] = d->out_uv_gpu;
 
 		std::vector<ncnn::vk_constant_type> constants(11);
 		constants[0].i = d->w;
@@ -733,10 +893,18 @@ bool RifeInterpolator::interpolate(float t, const Nv12Mut &out, InterpolateTimin
 		cmd.record_pipeline(d->synthesize, bindings, constants, dispatchShape(d->w / 4, d->h));
 	}
 
-	ncnn::Mat y_cpu(d->w * d->h / 4, (void *)d->out_y.data(), (size_t)4u);
-	ncnn::Mat uv_cpu(d->w * d->h / 8, (void *)d->out_uv.data(), (size_t)4u);
-	cmd.record_clone(y_gpu, y_cpu, d->opt);
-	cmd.record_clone(uv_gpu, uv_cpu, d->opt);
+	const bool direct_readback = d->out_y_gpu.allocator && d->out_y_gpu.allocator->mappable && d->out_y_gpu.allocator->cached
+		&& d->out_uv_gpu.allocator && d->out_uv_gpu.allocator->mappable && d->out_uv_gpu.allocator->cached;
+
+	ncnn::Mat y_cpu;
+	ncnn::Mat uv_cpu;
+	if(!direct_readback)
+	{
+		y_cpu = ncnn::Mat(y_words, (void *)d->out_y.data(), (size_t)4u);
+		uv_cpu = ncnn::Mat(uv_words, (void *)d->out_uv.data(), (size_t)4u);
+		cmd.record_clone(d->out_y_gpu, y_cpu, d->opt);
+		cmd.record_clone(d->out_uv_gpu, uv_cpu, d->opt);
+	}
 
 	if(cmd.submit_and_wait() != 0)
 	{
@@ -745,18 +913,35 @@ bool RifeInterpolator::interpolate(float t, const Nv12Mut &out, InterpolateTimin
 		return false;
 	}
 
-	// ncnn downloads into the Mat it was handed; if it had to reallocate, copy from there.
-	const uint8_t *src_y = (const uint8_t *)y_cpu.data;
-	const uint8_t *src_uv = (const uint8_t *)uv_cpu.data;
+	const uint8_t *src_y = nullptr;
+	const uint8_t *src_uv = nullptr;
+	if(direct_readback)
+	{
+		d->out_y_gpu.allocator->invalidate(d->out_y_gpu.data);
+		d->out_uv_gpu.allocator->invalidate(d->out_uv_gpu.data);
+		src_y = static_cast<const uint8_t *>(d->out_y_gpu.mapped_ptr());
+		src_uv = static_cast<const uint8_t *>(d->out_uv_gpu.mapped_ptr());
+	}
+	else
+	{
+		src_y = static_cast<const uint8_t *>(y_cpu.data);
+		src_uv = static_cast<const uint8_t *>(uv_cpu.data);
+	}
 	if(!src_y || !src_uv)
 	{
 		setError(error, "GPU download failed");
 		return false;
 	}
-	for(int row = 0; row < d->h; row++)
-		memcpy(out.y + (size_t)row * out.y_stride, src_y + (size_t)row * d->w, (size_t)d->w);
-	for(int row = 0; row < d->h / 2; row++)
-		memcpy(out.uv + (size_t)row * out.uv_stride, src_uv + (size_t)row * d->w, (size_t)d->w);
+	if(out.y_stride == d->w)
+		memcpy(out.y, src_y, (size_t)d->w * d->h);
+	else
+		for(int row = 0; row < d->h; row++)
+			memcpy(out.y + (size_t)row * out.y_stride, src_y + (size_t)row * d->w, (size_t)d->w);
+	if(out.uv_stride == d->w)
+		memcpy(out.uv, src_uv, (size_t)d->w * (d->h / 2));
+	else
+		for(int row = 0; row < d->h / 2; row++)
+			memcpy(out.uv + (size_t)row * out.uv_stride, src_uv + (size_t)row * d->w, (size_t)d->w);
 
 	if(timing)
 		timing->total_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();

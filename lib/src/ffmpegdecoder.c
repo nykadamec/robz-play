@@ -4,6 +4,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/pixdesc.h>
 #include <math.h>
+#include <string.h>
 
 static enum AVCodecID chiaki_codec_av_codec_id(ChiakiCodec codec)
 {
@@ -39,6 +40,10 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_ffmpeg_decoder_init(ChiakiFfmpegDecoder *de
 	decoder->hdr_enabled = codec == CHIAKI_CODEC_H265_HDR;
 	decoder->frames_lost = 0;
 	decoder->frame_recovered = false;
+	memset(decoder->decoded_queue, 0, sizeof(decoder->decoded_queue));
+	memset(decoder->decoded_queue_recovered, 0, sizeof(decoder->decoded_queue_recovered));
+	decoder->decoded_queue_head = 0;
+	decoder->decoded_queue_count = 0;
 	decoder->synthetic_packet_pts = 0;
 	decoder->synthetic_framerate = (AVRational){max_fps > 0 ? (int)max_fps : 60, 1};
 	decoder->synthetic_time_base = (AVRational){1, 1000000};
@@ -126,11 +131,94 @@ error_mutex:
 CHIAKI_EXPORT void chiaki_ffmpeg_decoder_fini(ChiakiFfmpegDecoder *decoder)
 {
 	chiaki_mutex_lock(&decoder->mutex);
+	for(size_t i = 0; i < decoder->decoded_queue_count; i++)
+	{
+		size_t idx = (decoder->decoded_queue_head + i) % CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY;
+		if(decoder->decoded_queue[idx])
+			av_frame_free(&decoder->decoded_queue[idx]);
+		decoder->decoded_queue_recovered[idx] = false;
+	}
+	decoder->decoded_queue_head = 0;
+	decoder->decoded_queue_count = 0;
 	avcodec_free_context(&decoder->codec_context);
 	if(decoder->hw_device_ctx)
 		av_buffer_unref(&decoder->hw_device_ctx);
 	chiaki_mutex_unlock(&decoder->mutex);
 	chiaki_mutex_fini(&decoder->mutex);
+}
+
+static void chiaki_ffmpeg_decoder_enqueue_frame_locked(ChiakiFfmpegDecoder *decoder, AVFrame *frame)
+{
+	bool recovered = decoder->frame_recovered;
+	if(recovered)
+		decoder->frame_recovered = false;
+
+	if(decoder->decoded_queue_count == CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY)
+	{
+		size_t head = decoder->decoded_queue_head;
+		if(decoder->decoded_queue_recovered[head])
+		{
+			if(decoder->decoded_queue_count > 1)
+			{
+				size_t next = (head + 1) % CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY;
+				decoder->decoded_queue_recovered[next] = true;
+			}
+			else
+			{
+				recovered = true;
+			}
+		}
+		if(decoder->decoded_queue[head])
+			av_frame_free(&decoder->decoded_queue[head]);
+		decoder->decoded_queue_recovered[head] = false;
+		decoder->decoded_queue_head = (head + 1) % CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY;
+		decoder->decoded_queue_count--;
+		decoder->frames_lost++;
+		if(decoder->log)
+			CHIAKI_LOGW(decoder->log, "Decoded frame queue is full, dropping oldest buffered frame");
+	}
+
+	size_t tail = (decoder->decoded_queue_head + decoder->decoded_queue_count) % CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY;
+	decoder->decoded_queue[tail] = frame;
+	decoder->decoded_queue_recovered[tail] = recovered;
+	decoder->decoded_queue_count++;
+}
+
+static int chiaki_ffmpeg_decoder_drain_codec_locked(ChiakiFfmpegDecoder *decoder)
+{
+	if(!decoder->codec_context)
+		return 0;
+
+	int drained = 0;
+	while(true)
+	{
+		AVFrame *frame = av_frame_alloc();
+		if(!frame)
+		{
+			if(decoder->log)
+				CHIAKI_LOGE(decoder->log, "Failed to alloc AVFrame");
+			return drained > 0 ? drained : -1;
+		}
+		int r = avcodec_receive_frame(decoder->codec_context, frame);
+		if(r == 0)
+		{
+			chiaki_ffmpeg_decoder_enqueue_frame_locked(decoder, frame);
+			drained++;
+		}
+		else if(r == AVERROR(EAGAIN) || r == AVERROR_EOF)
+		{
+			av_frame_free(&frame);
+			break;
+		}
+		else
+		{
+			if(decoder->log)
+				CHIAKI_LOGE(decoder->log, "Decoding with FFMPEG failed");
+			av_frame_free(&frame);
+			return drained > 0 ? drained : -1;
+		}
+	}
+	return drained;
 }
 
 CHIAKI_EXPORT bool chiaki_ffmpeg_decoder_video_sample_cb(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool frame_recovered, void *user)
@@ -197,38 +285,27 @@ CHIAKI_EXPORT bool chiaki_ffmpeg_decoder_video_sample_cb(uint8_t *buf, size_t bu
 	packet->time_base = decoder->synthetic_time_base;
 #endif
 	decoder->synthetic_packet_pts += synthetic_duration_pts;
-	int r;
-send_packet:
-	r = avcodec_send_packet(decoder->codec_context, packet);
-	if(r != 0)
+	int r = 0;
+	for(int retries = 0; retries < 4; retries++)
 	{
-		if(r == AVERROR(EAGAIN))
+		r = avcodec_send_packet(decoder->codec_context, packet);
+		if(r != AVERROR(EAGAIN))
+			break;
+		int drained = chiaki_ffmpeg_decoder_drain_codec_locked(decoder);
+		if(drained <= 0)
 		{
-			CHIAKI_LOGW(decoder->log, "AVCodec internal buffer is full, dropping a decoded frame to push new packet");
-			AVFrame *frame = av_frame_alloc();
-			if(!frame)
-			{
-				CHIAKI_LOGE(decoder->log, "Failed to alloc AVFrame");
-				goto hell;
-			}
-			r = avcodec_receive_frame(decoder->codec_context, frame);
-			av_frame_free(&frame);
-			if(r != 0)
-			{
-				CHIAKI_LOGE(decoder->log, "Failed to pull frame from full codec buffer");
-				goto hell;
-			}
-			decoder->frames_lost++;
-			goto send_packet;
-		}
-		else
-		{
-			char errbuf[128];
-			av_make_error_string(errbuf, sizeof(errbuf), r);
-			CHIAKI_LOGE(decoder->log, "Failed to push frame: %s", errbuf);
+			CHIAKI_LOGE(decoder->log, "Failed to pull frame from full codec buffer");
 			goto hell;
 		}
 	}
+	if(r != 0)
+	{
+		char errbuf[128];
+		av_make_error_string(errbuf, sizeof(errbuf), r);
+		CHIAKI_LOGE(decoder->log, "Failed to push frame: %s", errbuf);
+		goto hell;
+	}
+	chiaki_ffmpeg_decoder_drain_codec_locked(decoder);
 	av_packet_free(&packet);
 	chiaki_mutex_unlock(&decoder->mutex);
 	decoder->frame_available_cb(decoder, decoder->frame_available_cb_user);
@@ -243,47 +320,37 @@ CHIAKI_EXPORT ChiakiFfmpegFrame chiaki_ffmpeg_decoder_pull_frame(ChiakiFfmpegDec
 {
 	chiaki_mutex_lock(&decoder->mutex);
 	double synthetic_duration = decoder->synthetic_frame_duration_us / 1000000.0;
-	// always try to pull as much as possible and return only the very last frame
-	AVFrame *frame_last = NULL;
+	if(decoder->decoded_queue_count == 0 && decoder->codec_context)
+		chiaki_ffmpeg_decoder_drain_codec_locked(decoder);
+
 	AVFrame *frame = NULL;
-	while(true)
-	{
-		AVFrame *next_frame;
-		if(frame_last)
-		{
-			av_frame_unref(frame_last);
-			next_frame = frame_last;
-		}
-		else
-		{
-			next_frame = av_frame_alloc();
-			if(!next_frame)
-				break;
-		}
-		frame_last = frame;
-		frame = next_frame;
-		int r = avcodec_receive_frame(decoder->codec_context, frame);
-		if(r)
-		{
-			if(r != AVERROR(EAGAIN))
-				CHIAKI_LOGE(decoder->log, "Decoding with FFMPEG failed");
-			av_frame_free(&frame);
-			frame = frame_last;
-			break;
-		}
-	}
-	*frames_lost = decoder->frames_lost;
 	bool recovered = false;
-	if(frame && decoder->frame_recovered)
+	if(decoder->decoded_queue_count > 0)
 	{
-		recovered = true;
-		decoder->frame_recovered = false;
-		frame->decode_error_flags |= 1;
+		size_t head = decoder->decoded_queue_head;
+		frame = decoder->decoded_queue[head];
+		decoder->decoded_queue[head] = NULL;
+		recovered = decoder->decoded_queue_recovered[head];
+		decoder->decoded_queue_recovered[head] = false;
+		decoder->decoded_queue_head = (head + 1) % CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY;
+		decoder->decoded_queue_count--;
 	}
-	decoder->frames_lost = 0;
-	AVRational pkt_timebase = decoder->codec_context->pkt_timebase;
-	AVRational ctx_timebase = decoder->codec_context->time_base;
-	AVRational framerate = decoder->codec_context->framerate;
+
+	if(frame)
+	{
+		*frames_lost = decoder->frames_lost;
+		decoder->frames_lost = 0;
+		if(recovered)
+			frame->decode_error_flags |= 1;
+	}
+	else
+	{
+		*frames_lost = 0;
+	}
+
+	AVRational pkt_timebase = decoder->codec_context ? decoder->codec_context->pkt_timebase : decoder->synthetic_time_base;
+	AVRational ctx_timebase = decoder->codec_context ? decoder->codec_context->time_base : decoder->synthetic_time_base;
+	AVRational framerate = decoder->codec_context ? decoder->codec_context->framerate : decoder->synthetic_framerate;
 	chiaki_mutex_unlock(&decoder->mutex);
 
 	ChiakiFfmpegFrame frame_plus_stats = {};

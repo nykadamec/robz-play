@@ -580,6 +580,40 @@ Pane {
                 }
 
                 RowLayout {
+                    visible: Chiaki.macOs
+                    Layout.fillWidth: true
+                    Layout.topMargin: 12
+                    Layout.leftMargin: 14
+                    Layout.rightMargin: 10
+                    spacing: 10
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 1
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("macOS Wi-Fi Guard")
+                            color: consolePane.cText
+                            font.pixelSize: 15
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: Chiaki.awdlActive ? qsTr("Pause AirDrop/AWDL while streaming") : qsTr("AWDL paused (low-latency Wi-Fi)")
+                            color: Chiaki.awdlActive ? consolePane.cWarn : consolePane.cGood
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                    Toggle {
+                        on: Chiaki.settings.macAwdlGuardEnabled
+                        onClicked: {
+                            const next = !Chiaki.settings.macAwdlGuardEnabled;
+                            Chiaki.settings.macAwdlGuardEnabled = next;
+                            Chiaki.setAwdlSuppressed(next);
+                        }
+                    }
+                }
+
+                RowLayout {
                     Layout.fillWidth: true
                     Layout.topMargin: 14
                     Layout.leftMargin: 14
@@ -1316,9 +1350,19 @@ Pane {
                                 Label { text: qsTr("Motion detail"); color: consolePane.cMuted; font.pixelSize: 14 }
                                 SegmentGroup {
                                     Segment {
+                                        text: qsTr("Auto")
+                                        active: Chiaki.settings.frameGenFlowDivisor === 0
+                                        onClicked: Chiaki.settings.frameGenFlowDivisor = 0
+                                    }
+                                    Segment {
                                         text: qsTr("Fast")
                                         active: Chiaki.settings.frameGenFlowDivisor === 4
                                         onClicked: Chiaki.settings.frameGenFlowDivisor = 4
+                                    }
+                                    Segment {
+                                        text: qsTr("Perf")
+                                        active: Chiaki.settings.frameGenFlowDivisor === 3
+                                        onClicked: Chiaki.settings.frameGenFlowDivisor = 3
                                     }
                                     Segment {
                                         text: qsTr("Balanced")
@@ -1397,6 +1441,81 @@ Pane {
                                 Toggle {
                                     on: Chiaki.settings.showFpsCounter
                                     onClicked: Chiaki.settings.showFpsCounter = !Chiaki.settings.showFpsCounter
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.columnSpan: consolePane.roomy ? 2 : 2
+                                spacing: 6
+                                Label { text: qsTr("Image Enhancement Tech"); color: consolePane.cMuted; font.pixelSize: 14 }
+                                SegmentGroup {
+                                    Segment {
+                                        text: qsTr("Off")
+                                        active: Chiaki.settings.pictureEnhanceMode === 0
+                                        onClicked: Chiaki.settings.pictureEnhanceMode = 0
+                                    }
+                                    Segment {
+                                        text: qsTr("Adaptive")
+                                        active: Chiaki.settings.pictureEnhanceMode === 1
+                                        onClicked: Chiaki.settings.pictureEnhanceMode = 1
+                                    }
+                                    Segment {
+                                        text: qsTr("AMD CAS")
+                                        active: Chiaki.settings.pictureEnhanceMode === 2
+                                        onClicked: Chiaki.settings.pictureEnhanceMode = 2
+                                    }
+                                    Segment {
+                                        text: qsTr("Cinema")
+                                        active: Chiaki.settings.pictureEnhanceMode === 3
+                                        onClicked: Chiaki.settings.pictureEnhanceMode = 3
+                                    }
+                                    Segment {
+                                        text: qsTr("Ultra Crisp")
+                                        active: Chiaki.settings.pictureEnhanceMode === 4
+                                        onClicked: Chiaki.settings.pictureEnhanceMode = 4
+                                    }
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Label { text: qsTr("Color Vibrance & Clarity"); color: consolePane.cMuted; font.pixelSize: 14 }
+                                SegmentGroup {
+                                    Segment {
+                                        text: qsTr("Off")
+                                        active: Chiaki.settings.vibranceLevel === 0
+                                        onClicked: Chiaki.settings.vibranceLevel = 0
+                                    }
+                                    Segment {
+                                        text: qsTr("Subtle")
+                                        active: Chiaki.settings.vibranceLevel === 1
+                                        onClicked: Chiaki.settings.vibranceLevel = 1
+                                    }
+                                    Segment {
+                                        text: qsTr("Vivid")
+                                        active: Chiaki.settings.vibranceLevel === 2
+                                        onClicked: Chiaki.settings.vibranceLevel = 2
+                                    }
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignBottom
+                                Layout.minimumHeight: 40
+                                spacing: 12
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: qsTr("Deband smooth gradients")
+                                    color: consolePane.cMuted
+                                    font.pixelSize: 14
+                                    wrapMode: Text.Wrap
+                                }
+                                Toggle {
+                                    on: Chiaki.settings.debandQuickEnabled
+                                    onClicked: Chiaki.settings.debandQuickEnabled = !Chiaki.settings.debandQuickEnabled
                                 }
                             }
                         }

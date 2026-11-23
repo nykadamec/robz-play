@@ -98,6 +98,9 @@ class QmlBackend : public QObject
     Q_PROPERTY(bool controllerMappingInProgress READ controllerMappingInProgress NOTIFY controllerMappingInProgressChanged)
     Q_PROPERTY(bool controllerMappingAltered READ controllerMappingAltered NOTIFY controllerMappingAlteredChanged)
     Q_PROPERTY(bool enableAnalogStickMapping READ enableAnalogStickMapping WRITE setEnableAnalogStickMapping NOTIFY enableAnalogStickMappingChanged)
+    Q_PROPERTY(bool macOs READ isMacOs CONSTANT)
+    Q_PROPERTY(bool awdlActive READ awdlActive NOTIFY awdlStatusChanged)
+    Q_PROPERTY(QString awdlStatusText READ awdlStatusText NOTIFY awdlStatusChanged)
 
 public:
 
@@ -220,6 +223,17 @@ public:
     Q_INVOKABLE void controllerMappingButtonQuit();
     Q_INVOKABLE void controllerMappingApply();
     Q_INVOKABLE void autoRegister();
+    Q_INVOKABLE void refreshAwdlStatus();
+    Q_INVOKABLE void setAwdlSuppressed(bool suppress);
+    bool isMacOs() const {
+#ifdef Q_OS_MACOS
+        return true;
+#else
+        return false;
+#endif
+    }
+    bool awdlActive() const { return awdl_active; }
+    QString awdlStatusText() const { return awdl_status_text; }
 #if CHIAKI_GUI_ENABLE_STEAM_SHORTCUT
     Q_INVOKABLE void createSteamShortcut(QString shortcutName, QString launchOptions, const QJSValue &callback, QString steamDir);
 #endif
@@ -259,6 +273,7 @@ signals:
     void registDialogRequested(const QString &host, bool ps5, const QString &duid);
     void psnLoginAccountIdDone(const QString &accountId);
     void psnLoginAccountIdError(const QString &error);
+    void awdlStatusChanged();
 
 private:
     struct DisplayServer {
@@ -356,6 +371,9 @@ private:
     QString auto_connect_nickname = "";
     QString wakeup_nickname = "";
     bool wakeup_start = false;
+    bool awdl_active = false;
+    bool awdl_suppressed_by_app = false;
+    QString awdl_status_text;
     QMap<QString, PsnHost> psn_hosts = {};
     QMap<QString, PsnHost> psn_nickname_hosts = {};
 #ifdef CHIAKI_HAVE_WEBENGINE

@@ -154,7 +154,10 @@ if(NOT CHIAKI_ENABLE_FFMPEG_DECODER)
 	message(FATAL_ERROR "Chiaki GUI requires CHIAKI_ENABLE_FFMPEG_DECODER=ON")
 endif()
 if(APPLE)
-	target_link_libraries(chiaki "-framework AVFoundation" "-framework IOKit")
+	target_link_libraries(chiaki "-framework AVFoundation" "-framework IOKit" "-framework CoreVideo")
+	set_target_properties(chiaki PROPERTIES
+		BUILD_RPATH "@executable_path/../Frameworks;/opt/homebrew/lib"
+		INSTALL_RPATH "@executable_path/../Frameworks;/opt/homebrew/lib")
 endif()
 
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fanalyzer")
@@ -162,10 +165,10 @@ set_target_properties(chiaki PROPERTIES
 		OUTPUT_NAME "RobzPlay"
 		MACOSX_BUNDLE TRUE
 		MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/MacOSXBundleInfo.plist.in"
-		MACOSX_BUNDLE_BUNDLE_NAME chiaki-ng
-		MACOSX_BUNDLE_BUNDLE_VERSION ${CHIAKI_VERSION}
-		MACOSX_BUNDLE_COPYRIGHT "thestr4ng3r (AGPLv3)"
-		MACOSX_BUNDLE_GUI_IDENTIFIER "org.streetpea.chiaking"
+		MACOSX_BUNDLE_BUNDLE_NAME "Robz Play"
+		MACOSX_BUNDLE_BUNDLE_VERSION ${ROBZPLAY_VERSION}
+		MACOSX_BUNDLE_COPYRIGHT "Robz Play / chiaki-ng (AGPLv3)"
+		MACOSX_BUNDLE_GUI_IDENTIFIER "org.robzplay.RobzPlay"
 		MACOSX_BUNDLE_ICON_FILE chiaking.icns
 		RESOURCE "${RESOURCE_FILES}")
 

@@ -13,6 +13,10 @@
 #include <switch.h>
 #endif
 
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#endif
+
 #if defined(__ANDROID__)
 struct chiaki_timedjoin_ctx
 {
@@ -136,6 +140,22 @@ static void *g_affinity_cb_user = NULL;
 
 CHIAKI_EXPORT void chiaki_thread_set_affinity(ChiakiThreadName name)
 {
+#if defined(__APPLE__)
+	// Keep real-time network, feedback, and crypto threads on Apple Silicon P-cores
+	switch(name)
+	{
+		case CHIAKI_THREAD_NAME_TAKION:
+		case CHIAKI_THREAD_NAME_TAKION_SEND:
+		case CHIAKI_THREAD_NAME_RUDP_SEND:
+		case CHIAKI_THREAD_NAME_FEEDBACK:
+		case CHIAKI_THREAD_NAME_GKCRYPT:
+			pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+			break;
+		default:
+			pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+			break;
+	}
+#endif
 	if(g_affinity_cb)
 		g_affinity_cb(name, g_affinity_cb_user);
 }

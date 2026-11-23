@@ -52,6 +52,9 @@ public:
 		bool enabled = false;
 		QString model_dir;
 		int flow_divisor = 2;
+		// When true, automatically steps down motion resolution (1 -> 2 -> 3 -> 4) if the GPU
+		// exceeds the frame time budget, keeping 60/120 FPS locked without dropping frames.
+		bool auto_scale = true;
 		// Output rate to aim for: 60 or 120 frames per second.
 		unsigned int target_fps = 60;
 		// Keep static picture elements (HUD text, map frame) from being dragged by scene motion.

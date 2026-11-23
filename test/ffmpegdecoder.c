@@ -7,6 +7,8 @@
 #include <libavutil/frame.h>
 #include <libavutil/avutil.h>
 
+#include <string.h>
+
 /* Helper: allocate an AVFrame with both timestamp fields set to AV_NOPTS_VALUE */
 static AVFrame *alloc_blank_frame(void)
 {
@@ -161,6 +163,79 @@ static MunitResult test_duration_120fps(const MunitParameter params[], void *use
 	return MUNIT_OK;
 }
 
+static void dummy_frame_available_cb(ChiakiFfmpegDecoder *decoder, void *user)
+{
+	(void)decoder;
+	(void)user;
+}
+
+/* Buffered decoded frames are returned in FIFO order without dropping */
+static MunitResult test_queue_fifo_order(const MunitParameter params[], void *user)
+{
+	(void)params;
+	(void)user;
+	ChiakiFfmpegDecoder decoder;
+	memset(&decoder, 0, sizeof(decoder));
+	ChiakiErrorCode err = chiaki_ffmpeg_decoder_init(&decoder, NULL, CHIAKI_CODEC_H264, 60, NULL, NULL, dummy_frame_available_cb, NULL);
+	munit_assert_int(err, ==, CHIAKI_ERR_SUCCESS);
+
+	for(int i = 0; i < CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY; i++)
+	{
+		AVFrame *f = alloc_blank_frame();
+		f->pts = (i + 1) * 1000;
+		decoder.decoded_queue[i] = f;
+		decoder.decoded_queue_recovered[i] = (i == 1);
+	}
+	decoder.decoded_queue_head = 0;
+	decoder.decoded_queue_count = CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY;
+
+	for(int i = 0; i < CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY; i++)
+	{
+		int32_t lost = -1;
+		ChiakiFfmpegFrame pulled = chiaki_ffmpeg_decoder_pull_frame(&decoder, &lost);
+		munit_assert_not_null(pulled.frame);
+		munit_assert_int(lost, ==, 0);
+		munit_assert_double_equal(pulled.pts, ((i + 1) * 1000) / 1000000.0, 9);
+		munit_assert_int(pulled.recovered ? 1 : 0, ==, (i == 1) ? 1 : 0);
+		av_frame_free(&pulled.frame);
+	}
+
+	int32_t lost = -1;
+	ChiakiFfmpegFrame empty = chiaki_ffmpeg_decoder_pull_frame(&decoder, &lost);
+	munit_assert_null(empty.frame);
+	munit_assert_int(lost, ==, 0);
+
+	chiaki_ffmpeg_decoder_fini(&decoder);
+	return MUNIT_OK;
+}
+
+/* Decoder destructor frees any still-queued frames cleanly */
+static MunitResult test_queue_fini_frees_remaining(const MunitParameter params[], void *user)
+{
+	(void)params;
+	(void)user;
+	ChiakiFfmpegDecoder decoder;
+	memset(&decoder, 0, sizeof(decoder));
+	ChiakiErrorCode err = chiaki_ffmpeg_decoder_init(&decoder, NULL, CHIAKI_CODEC_H264, 60, NULL, NULL, dummy_frame_available_cb, NULL);
+	munit_assert_int(err, ==, CHIAKI_ERR_SUCCESS);
+
+	for(int i = 0; i < 2; i++)
+	{
+		AVFrame *f = alloc_blank_frame();
+		f->pts = (i + 1) * 500;
+		size_t idx = (2 + (size_t)i) % CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY;
+		decoder.decoded_queue[idx] = f;
+	}
+	decoder.decoded_queue_head = 2 % CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY;
+	decoder.decoded_queue_count = 2;
+
+	chiaki_ffmpeg_decoder_fini(&decoder);
+	munit_assert_uint(decoder.decoded_queue_count, ==, 0);
+	for(size_t i = 0; i < CHIAKI_FFMPEG_DECODER_QUEUE_CAPACITY; i++)
+		munit_assert_null(decoder.decoded_queue[i]);
+	return MUNIT_OK;
+}
+
 MunitTest tests_ffmpegdecoder[] = {
 	{
 		"/pts_from_best_effort",
@@ -195,6 +270,16 @@ MunitTest tests_ffmpegdecoder[] = {
 	{
 		"/duration_120fps",
 		test_duration_120fps,
+		NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL
+	},
+	{
+		"/queue_fifo_order",
+		test_queue_fifo_order,
+		NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL
+	},
+	{
+		"/queue_fini_frees_remaining",
+		test_queue_fini_frees_remaining,
 		NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL
 	},
 	{ NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL }

@@ -30,6 +30,14 @@ Item {
     property int separateDialogY: 0
     property bool sessionStopDialogActive: false
     property bool sessionPinDialogActive: false
+    readonly property bool hasVisibleStreamOverlay:
+        loadingView.visible ||
+        cantDisplayMessage.visible ||
+        networkIndicatorButton.visible ||
+        fpsCounter.visible ||
+        menuView.visible ||
+        sessionStopDialog.visible ||
+        sessionPinDialog.visible
 
     function grabInput(item) {
         Chiaki.window.grabInput();
@@ -365,6 +373,7 @@ Item {
     }
 
     RoundButton {
+        id: networkIndicatorButton
         anchors {
             right: parent.right
             top: parent.top
@@ -790,6 +799,18 @@ Item {
                                 text: qsTr("Sharpening: %1").arg([qsTr("Off"), qsTr("Low"), qsTr("Medium"), qsTr("High")][level])
                                 onClicked: Chiaki.settings.sharpening = (level + 1) % 4
                                 KeyNavigation.left: compareButton
+                                KeyNavigation.right: enhanceButton
+                                KeyNavigation.down: defaultButton
+                                Keys.onReturnPressed: clicked()
+                                Keys.onEscapePressed: menuController.close()
+                            }
+
+                            MenuButton {
+                                id: enhanceButton
+                                readonly property int mode: Math.max(0, Math.min(4, Chiaki.settings.pictureEnhanceMode))
+                                text: qsTr("Enhance: %1").arg([qsTr("Off"), qsTr("Adaptive"), qsTr("AMD CAS"), qsTr("Cinema"), qsTr("Ultra Crisp")][mode])
+                                onClicked: Chiaki.settings.pictureEnhanceMode = (mode + 1) % 5
+                                KeyNavigation.left: sharpenButton
                                 KeyNavigation.right: defaultButton
                                 KeyNavigation.down: defaultButton
                                 Keys.onReturnPressed: clicked()

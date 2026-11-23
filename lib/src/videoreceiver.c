@@ -6,9 +6,10 @@
 
 #include <string.h>
 
-// While waiting for a requested IDR frame, request it again this often, in case the request
-// or the IDR frame itself was lost; otherwise the picture would stay frozen
-#define VIDEO_IDR_RETRY_INTERVAL_MS 1000
+// Smart Fast-IDR Recovery: retry quickly after 200 ms, then back off to 400 / 800 ms
+// so a lost keyframe recovers in a few frames instead of freezing for a full second.
+#define VIDEO_IDR_RETRY_BASE_MS 200
+#define VIDEO_IDR_RETRY_MAX_MS 800
 
 static ChiakiErrorCode chiaki_video_receiver_flush_frame(ChiakiVideoReceiver *video_receiver);
 
@@ -60,6 +61,7 @@ CHIAKI_EXPORT void chiaki_video_receiver_init(ChiakiVideoReceiver *video_receive
 	chiaki_mutex_init(&video_receiver->waiting_for_idr_mutex, false);
 	video_receiver->waiting_for_idr = false;
 	video_receiver->idr_request_last_ms = 0;
+	video_receiver->idr_retry_count = 0;
 	chiaki_mutex_init(&video_receiver->frames_lost_mutex, false);
 }
 
@@ -77,22 +79,37 @@ CHIAKI_EXPORT void chiaki_video_receiver_set_waiting_for_idr(ChiakiVideoReceiver
 	chiaki_mutex_lock(&video_receiver->waiting_for_idr_mutex);
 	video_receiver->waiting_for_idr = waiting_for_idr;
 	if(waiting_for_idr)
+	{
 		video_receiver->idr_request_last_ms = chiaki_time_now_monotonic_ms();
+		video_receiver->idr_retry_count = 0;
+	}
+	else
+	{
+		video_receiver->idr_retry_count = 0;
+	}
 	chiaki_mutex_unlock(&video_receiver->waiting_for_idr_mutex);
 }
 
 /**
- * While waiting for an IDR frame, request it again once VIDEO_IDR_RETRY_INTERVAL_MS has passed
- * since it was last requested.
+ * While waiting for an IDR frame, request it again using fast exponential backoff
+ * (200 ms -> 400 ms -> 800 ms) so dropped IDR requests recover quickly without flooding.
  */
 static void video_receiver_retry_idr_request(ChiakiVideoReceiver *video_receiver)
 {
 	chiaki_mutex_lock(&video_receiver->waiting_for_idr_mutex);
 	uint64_t now_ms = chiaki_time_now_monotonic_ms();
+	uint32_t shift = video_receiver->idr_retry_count > 2 ? 2 : video_receiver->idr_retry_count;
+	uint64_t interval_ms = (uint64_t)VIDEO_IDR_RETRY_BASE_MS << shift;
+	if(interval_ms > VIDEO_IDR_RETRY_MAX_MS)
+		interval_ms = VIDEO_IDR_RETRY_MAX_MS;
 	bool due = video_receiver->waiting_for_idr
-		&& now_ms - video_receiver->idr_request_last_ms >= VIDEO_IDR_RETRY_INTERVAL_MS;
+		&& now_ms - video_receiver->idr_request_last_ms >= interval_ms;
 	if(due)
+	{
 		video_receiver->idr_request_last_ms = now_ms;
+		if(video_receiver->idr_retry_count < 8)
+			video_receiver->idr_retry_count++;
+	}
 	chiaki_mutex_unlock(&video_receiver->waiting_for_idr_mutex);
 	if(!due)
 		return;

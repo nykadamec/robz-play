@@ -24,12 +24,35 @@ static void *congestion_control_thread_func(void *user)
 		chiaki_packet_stats_get(control->stats, true, &received, &lost);
 		ChiakiTakionCongestionPacket packet = { 0 };
 		uint64_t total = received + lost;
-		control->packet_loss = total > 0 ? (double)lost / total : 0;
-		if(control->packet_loss > control->packet_loss_max)
+		double raw_loss = total > 0 ? (double)lost / (double)total : 0.0;
+		control->packet_loss = raw_loss;
+
+		// Congestion Shield (EMA + single-window spike filter):
+		// Ignore isolated 200 ms Wi-Fi micro-jitter spikes so PS5 doesn't crush bitrate/resolution,
+		// while still reporting sustained congestion honestly.
+		if(raw_loss > 0.005)
+			control->consecutive_loss_windows++;
+		else
+			control->consecutive_loss_windows = 0;
+
+		control->packet_loss_ema = control->packet_loss_ema * 0.65 + raw_loss * 0.35;
+		double reported_loss = raw_loss;
+		if(control->consecutive_loss_windows <= 1 && raw_loss < 0.25)
 		{
-			CHIAKI_LOGD(control->takion->log, "Clamping reported packet loss: measured=%.1f%% reported_max=%.1f%%",
-				control->packet_loss * 100.0, control->packet_loss_max * 100.0);
-			lost = total * control->packet_loss_max;
+			// Single brief jitter window: report smoothed EMA instead of the raw spike
+			reported_loss = control->packet_loss_ema;
+		}
+		if(reported_loss > control->packet_loss_max)
+		{
+			CHIAKI_LOGD(control->takion->log, "Clamping reported packet loss: measured=%.1f%% filtered=%.1f%% reported_max=%.1f%%",
+				raw_loss * 100.0, reported_loss * 100.0, control->packet_loss_max * 100.0);
+			reported_loss = control->packet_loss_max;
+		}
+		if(total > 0)
+		{
+			lost = (uint64_t)((double)total * reported_loss + 0.5);
+			if(lost > total)
+				lost = total;
 			received = total - lost;
 		}
 		packet.received = (uint16_t)received;
@@ -49,6 +72,8 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_congestion_control_start(ChiakiCongestionCo
 	control->stats = stats;
 	control->packet_loss_max = packet_loss_max;
 	control->packet_loss = 0;
+	control->packet_loss_ema = 0;
+	control->consecutive_loss_windows = 0;
 
 	ChiakiErrorCode err = chiaki_bool_pred_cond_init(&control->stop_cond);
 	if(err != CHIAKI_ERR_SUCCESS)

@@ -34,6 +34,8 @@
   <qresource prefix="/shaders">
     <file alias="FSR.glsl">shaders/FSR.glsl</file>
     <file alias="robzplay_sharpen.glsl">shaders/robzplay_sharpen.glsl</file>
+    <file alias="robzplay_cas.glsl">shaders/robzplay_cas.glsl</file>
+    <file alias="robzplay_vibrance.glsl">shaders/robzplay_vibrance.glsl</file>
     <file alias="FSRCNNX_x2_8-0-4-1.glsl">shaders/FSRCNNX_x2_8-0-4-1.glsl</file>
     <file alias="FSRCNNX_x2_16-0-4-1.glsl">shaders/FSRCNNX_x2_16-0-4-1.glsl</file>
   </qresource>

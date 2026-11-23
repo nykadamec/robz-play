@@ -30,6 +30,8 @@ extern "C" {
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
+#elif defined(__APPLE__)
+#include <pthread/qos.h>
 #endif
 
 Q_LOGGING_CATEGORY(robzFrameGen, "robzplay.framegen", QtInfoMsg);
@@ -117,6 +119,8 @@ struct FrameGenStage::Engine
 	// the very first runs are slow (pipelines and buffers are still being set up) and say
 	// nothing about the steady cost: they are not measured
 	int warmup_left = 4;
+	// Auto-Scale: count consecutive frames exceeding the GPU time budget before stepping down
+	int slow_streak = 0;
 
 	// What generating `count` frames for one pair is expected to cost, in ms.
 	double pairCostMs(int count) const
@@ -292,6 +296,9 @@ void FrameGenStage::runSelfTest(const Config &test_config, std::function<void()>
 	// fed from its own thread so the cadence does not depend on how busy the UI is
 	auto index = std::make_shared<std::atomic<int>>(0);
 	auto feeder = std::make_shared<std::thread>([this, index]() {
+		const auto wait_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+		while(!engine_ready.load() && running.load() && std::chrono::steady_clock::now() < wait_deadline)
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
 		const auto begin = std::chrono::steady_clock::now();
 		for(int i = 0; i < 240; i++)
 		{
@@ -327,7 +334,12 @@ void FrameGenStage::runSelfTest(const Config &test_config, std::function<void()>
 		}
 	});
 
-	QTimer::singleShot(7600, this, [this, feeder, index, presented]() {
+	auto check_timer = new QTimer(this);
+	connect(check_timer, &QTimer::timeout, this, [this, check_timer, feeder, index, presented]() {
+		if(index->load() < 220 && running.load())
+			return;
+		check_timer->stop();
+		check_timer->deleteLater();
 		// sample the counters while frames are still flowing, then let the feeder finish
 		const QString final_status = status();
 		const double fps_in = sourceFps();
@@ -341,6 +353,7 @@ void FrameGenStage::runSelfTest(const Config &test_config, std::function<void()>
 		fflush(stderr);
 		stop();
 	});
+	check_timer->start(200);
 }
 
 void FrameGenStage::submit(ChiakiFfmpegFrame frame, int32_t frames_lost, qint64 delivery_us)
@@ -377,6 +390,9 @@ void FrameGenStage::submit(ChiakiFfmpegFrame frame, int32_t frames_lost, qint64 
 
 void FrameGenStage::presenterMain()
 {
+#if defined(__APPLE__)
+	pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
 	std::unique_lock<std::mutex> lock(schedule_mutex);
 	while(!presenter_stop)
 	{
@@ -451,6 +467,9 @@ void FrameGenStage::flushSchedule()
 
 void FrameGenStage::workerMain()
 {
+#if defined(__APPLE__)
+	pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
 	engine.reset(new Engine);
 	timeline_valid = false;
 	last_due_us = 0;
@@ -466,7 +485,16 @@ void FrameGenStage::workerMain()
 		robzfg::RifeInterpolator::Config rife_config;
 		// UTF-8: the model sits beside the executable, in a folder any user name can be part of
 		rife_config.model_dir = config.model_dir.toUtf8().toStdString();
-		rife_config.flow_divisor = config.flow_divisor;
+#ifdef __APPLE__
+		// flow_divisor == 0 means Auto: start at 3 (640x384 on 1080p) on Apple Silicon so
+		// 30->60 FPS stays comfortably inside the 80% frame budget from frame 1 while
+		// leaving GPU headroom for Retina display rendering.
+		rife_config.flow_divisor = (config.flow_divisor == 0) ? 3 : config.flow_divisor;
+		rife_config.sharp_sampling = false;
+#else
+		// flow_divisor == 0 means Auto: start at Balanced (2) and step down if needed
+		rife_config.flow_divisor = (config.flow_divisor == 0) ? 2 : config.flow_divisor;
+#endif
 		rife_config.protect_static = config.protect_static;
 		std::string error;
 		const auto begin = std::chrono::steady_clock::now();
@@ -508,7 +536,25 @@ void FrameGenStage::workerMain()
 			flushSchedule();
 			if(engine->ok)
 			{
-				engine->rife.reset();
+				if((config.auto_scale || config.flow_divisor == 0) && engine->warmup_left == 0 && engine->rife.flowDivisor() < 4)
+				{
+					const int prev_div = engine->rife.flowDivisor();
+					const int next_div = prev_div + 1;
+					if(engine->rife.setFlowDivisor(next_div))
+					{
+						qCInfo(robzFrameGen).nospace() << "Auto-Scale (overload): stepping flow_divisor "
+							<< prev_div << " -> " << next_div;
+						engine->first_ms_avg = 0.0;
+						engine->rest_ms_avg = 0.0;
+						engine->generate_ms_avg = 0.0;
+						engine->warmup_left = 3;
+						engine->slow_streak = 0;
+					}
+				}
+				else
+				{
+					engine->rife.reset();
+				}
 				engine->dedup.reset();
 			}
 			last_unique_us = 0;
@@ -628,6 +674,37 @@ void FrameGenStage::process(Item &item)
 	}
 
 	// Never take on more than the GPU can finish inside one interval.
+	// Smart Auto-Scale: if enabled (or flow_divisor == 0 "Auto") and the GPU is exceeding
+	// the frame budget, step down motion resolution (1 -> 2 -> 3 -> 4) dynamically to lock 60/120 FPS.
+	const double budget_ms = (cadence_us * MAX_GENERATE_LOAD) / 1000.0;
+	if((config.auto_scale || config.flow_divisor == 0) && engine->warmup_left == 0 && engine->first_ms_avg > 0.0)
+	{
+		const double cost_ms = engine->pairCostMs(intermediates > 0 ? intermediates : 1);
+		if(cost_ms > budget_ms && engine->rife.flowDivisor() < 4)
+		{
+			engine->slow_streak++;
+			if(engine->slow_streak >= 6)
+			{
+				const int prev_div = engine->rife.flowDivisor();
+				const int next_div = prev_div < 4 ? prev_div + 1 : 4;
+				if(engine->rife.setFlowDivisor(next_div))
+				{
+					qCInfo(robzFrameGen).nospace() << "Auto-Scale: GPU took " << cost_ms << " ms (budget "
+						<< budget_ms << " ms), stepping flow_divisor " << prev_div << " -> " << next_div;
+					engine->first_ms_avg = 0.0;
+					engine->rest_ms_avg = 0.0;
+					engine->generate_ms_avg = 0.0;
+					engine->warmup_left = 3;
+					engine->slow_streak = 0;
+				}
+			}
+		}
+		else
+		{
+			engine->slow_streak = 0;
+		}
+	}
+
 	int count = intermediates;
 	bool reduced = false;
 	while(count > 1 && engine->pairCostMs(count) * 1000.0 > cadence_us * MAX_GENERATE_LOAD)

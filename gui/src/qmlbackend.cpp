@@ -10,9 +10,13 @@
 #include "chiaki/remote/holepunch.h"
 #ifdef Q_OS_MACOS
 #include "macWakeSleep.h"
+#include <CoreVideo/CoreVideo.h>
+#include <pthread/qos.h>
 #elif defined(Q_OS_WINDOWS)
 #include "windowsWakeSleep.h"
 #endif
+
+#include <limits>
 #if CHIAKI_GUI_ENABLE_STEAM_SHORTCUT
 #include "steamtools.h"
 #endif
@@ -283,6 +287,22 @@ void QmlRegist::regist_cb(ChiakiRegistEvent *event, void *user)
     }
 }
 
+static QString resolveFrameGenModelDir(const QString &model_name)
+{
+    const QString app_dir = QCoreApplication::applicationDirPath();
+    const QStringList candidates = {
+        app_dir + "/models/" + model_name,
+        app_dir + "/../Resources/models/" + model_name,
+        QDir::cleanPath(app_dir + "/../../../robzfg/models/" + model_name),
+        QDir::cleanPath(app_dir + "/../../../../robzfg/models/" + model_name)
+    };
+    for (const QString &candidate : candidates) {
+        if (QFileInfo::exists(candidate + "/flownet.param"))
+            return candidate;
+    }
+    return candidates.first();
+}
+
 QmlBackend::QmlBackend(Settings *settings, QmlMainWindow *window)
     : QObject(window)
     , settings(settings)
@@ -302,6 +322,9 @@ QmlBackend::QmlBackend(Settings *settings, QmlMainWindow *window)
     framegen = new FrameGenStage(this);
     updater = new UpdateChecker(settings, this);
     window->setSharpening(settings->GetSharpening());
+    window->setPictureEnhanceMode(settings->GetPictureEnhanceMode());
+    window->setVibranceLevel(settings->GetVibranceLevel());
+    window->setDebandQuickEnabled(settings->GetDebandQuickEnabled());
     connect(settings_qml, &QmlSettings::languageChanged, this, [this]() {
         RobzTranslator::instance()->setLanguage(this->settings->GetLanguage());
         this->window->retranslateUi();
@@ -310,6 +333,16 @@ QmlBackend::QmlBackend(Settings *settings, QmlMainWindow *window)
     connect(settings_qml, &QmlSettings::sharpeningChanged, this, [this]() {
         this->window->setSharpening(this->settings->GetSharpening());
     });
+    connect(settings_qml, &QmlSettings::pictureEnhanceModeChanged, this, [this]() {
+        this->window->setPictureEnhanceMode(this->settings->GetPictureEnhanceMode());
+    });
+    connect(settings_qml, &QmlSettings::vibranceLevelChanged, this, [this]() {
+        this->window->setVibranceLevel(this->settings->GetVibranceLevel());
+    });
+    connect(settings_qml, &QmlSettings::debandQuickEnabledChanged, this, [this]() {
+        this->window->setDebandQuickEnabled(this->settings->GetDebandQuickEnabled());
+    });
+    refreshAwdlStatus();
     // the comparison view follows its switch at once, also during a stream
     framegen->setCompareSplit(settings->GetFrameGenCompare());
     framegen->setCompareLabels(tr("%1 FPS · without frame generation"), tr("%1 FPS · Robz Play"));
@@ -322,7 +355,7 @@ QmlBackend::QmlBackend(Settings *settings, QmlMainWindow *window)
     if (qEnvironmentVariableIsSet("ROBZPLAY_FRAMEGEN_SELFTEST")) {
         FrameGenStage::Config selftest_config;
         selftest_config.enabled = true;
-        selftest_config.model_dir = QCoreApplication::applicationDirPath() + "/models/" + settings->GetFrameGenModel();
+        selftest_config.model_dir = resolveFrameGenModelDir(settings->GetFrameGenModel());
         selftest_config.flow_divisor = settings->GetFrameGenFlowDivisor();
         selftest_config.target_fps = static_cast<unsigned int>(settings->GetFrameGenTargetFps());
         selftest_config.protect_static = settings->GetFrameGenProtectStatic();
@@ -345,6 +378,11 @@ QmlBackend::QmlBackend(Settings *settings, QmlMainWindow *window)
     frame_thread->setObjectName("frame");
     frame_thread->start();
     frame_obj->moveToThread(frame_thread);
+#ifdef Q_OS_MACOS
+    QMetaObject::invokeMethod(frame_obj, []() {
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    }, Qt::QueuedConnection);
+#endif
 
     PsnConnectionWorker *worker = new PsnConnectionWorker;
     worker->moveToThread(&psn_connection_thread);
@@ -494,6 +532,131 @@ QmlBackend::QmlBackend(Settings *settings, QmlMainWindow *window)
     refreshPsnToken();
 }
 
+#ifdef Q_OS_MACOS
+static void releaseWrappedCVPixelBuffer(void *opaque, uint8_t * /*data*/)
+{
+    CVPixelBufferRef pixbuf = reinterpret_cast<CVPixelBufferRef>(opaque);
+    if (pixbuf) {
+        CVPixelBufferUnlockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly);
+        CVPixelBufferRelease(pixbuf);
+    }
+}
+
+static AVFrame *wrapVideoToolboxFrameReadOnly(const AVFrame *hw_frame)
+{
+    if (!hw_frame || hw_frame->format != AV_PIX_FMT_VIDEOTOOLBOX || !hw_frame->data[3]
+        || hw_frame->width <= 0 || hw_frame->height <= 0)
+        return nullptr;
+
+    CVPixelBufferRef pixbuf = reinterpret_cast<CVPixelBufferRef>(hw_frame->data[3]);
+    if (!CVPixelBufferIsPlanar(pixbuf) || CVPixelBufferGetPlaneCount(pixbuf) < 2)
+        return nullptr;
+
+    const OSType cv_fmt = CVPixelBufferGetPixelFormatType(pixbuf);
+    AVPixelFormat sw_fmt = AV_PIX_FMT_NONE;
+    AVColorRange inferred_range = AVCOL_RANGE_UNSPECIFIED;
+    switch (cv_fmt) {
+    case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
+        sw_fmt = AV_PIX_FMT_NV12;
+        inferred_range = AVCOL_RANGE_MPEG;
+        break;
+    case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
+        sw_fmt = AV_PIX_FMT_NV12;
+        inferred_range = AVCOL_RANGE_JPEG;
+        break;
+    case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
+        sw_fmt = AV_PIX_FMT_P010LE;
+        inferred_range = AVCOL_RANGE_MPEG;
+        break;
+    case kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
+        sw_fmt = AV_PIX_FMT_P010LE;
+        inferred_range = AVCOL_RANGE_JPEG;
+        break;
+    default:
+        return nullptr;
+    }
+
+    if (CVPixelBufferGetWidthOfPlane(pixbuf, 0) < static_cast<size_t>(hw_frame->width)
+        || CVPixelBufferGetHeightOfPlane(pixbuf, 0) < static_cast<size_t>(hw_frame->height)
+        || CVPixelBufferGetHeightOfPlane(pixbuf, 1) < static_cast<size_t>((hw_frame->height + 1) / 2)) {
+        return nullptr;
+    }
+
+    CVPixelBufferRetain(pixbuf);
+    if (CVPixelBufferLockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
+        CVPixelBufferRelease(pixbuf);
+        return nullptr;
+    }
+
+    uint8_t *y_ptr = static_cast<uint8_t *>(CVPixelBufferGetBaseAddressOfPlane(pixbuf, 0));
+    uint8_t *uv_ptr = static_cast<uint8_t *>(CVPixelBufferGetBaseAddressOfPlane(pixbuf, 1));
+    const size_t y_stride = CVPixelBufferGetBytesPerRowOfPlane(pixbuf, 0);
+    const size_t uv_stride = CVPixelBufferGetBytesPerRowOfPlane(pixbuf, 1);
+    if (!y_ptr || !uv_ptr || y_stride == 0 || uv_stride == 0
+        || y_stride > static_cast<size_t>(std::numeric_limits<int>::max())
+        || uv_stride > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        CVPixelBufferUnlockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly);
+        CVPixelBufferRelease(pixbuf);
+        return nullptr;
+    }
+
+    // Second retain + lock so both AVFrame plane buffers own independent lock lifetimes
+    CVPixelBufferRetain(pixbuf);
+    if (CVPixelBufferLockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
+        CVPixelBufferRelease(pixbuf);
+        CVPixelBufferUnlockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly);
+        CVPixelBufferRelease(pixbuf);
+        return nullptr;
+    }
+
+    AVBufferRef *buf0 = av_buffer_create(y_ptr, y_stride * static_cast<size_t>(hw_frame->height),
+                                         releaseWrappedCVPixelBuffer, pixbuf, AV_BUFFER_FLAG_READONLY);
+    if (!buf0) {
+        CVPixelBufferUnlockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly);
+        CVPixelBufferRelease(pixbuf);
+        CVPixelBufferUnlockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly);
+        CVPixelBufferRelease(pixbuf);
+        return nullptr;
+    }
+
+    AVBufferRef *buf1 = av_buffer_create(uv_ptr, uv_stride * static_cast<size_t>((hw_frame->height + 1) / 2),
+                                         releaseWrappedCVPixelBuffer, pixbuf, AV_BUFFER_FLAG_READONLY);
+    if (!buf1) {
+        av_buffer_unref(&buf0);
+        CVPixelBufferUnlockBaseAddress(pixbuf, kCVPixelBufferLock_ReadOnly);
+        CVPixelBufferRelease(pixbuf);
+        return nullptr;
+    }
+
+    AVFrame *sw_frame = av_frame_alloc();
+    if (!sw_frame) {
+        av_buffer_unref(&buf0);
+        av_buffer_unref(&buf1);
+        return nullptr;
+    }
+
+    sw_frame->format = sw_fmt;
+    sw_frame->width = hw_frame->width;
+    sw_frame->height = hw_frame->height;
+    sw_frame->buf[0] = buf0;
+    sw_frame->data[0] = y_ptr;
+    sw_frame->linesize[0] = static_cast<int>(y_stride);
+    sw_frame->buf[1] = buf1;
+    sw_frame->data[1] = uv_ptr;
+    sw_frame->linesize[1] = static_cast<int>(uv_stride);
+
+    if (av_frame_copy_props(sw_frame, hw_frame) < 0) {
+        av_frame_free(&sw_frame);
+        return nullptr;
+    }
+    if (sw_frame->hw_frames_ctx)
+        av_buffer_unref(&sw_frame->hw_frames_ctx);
+    if (sw_frame->color_range == AVCOL_RANGE_UNSPECIFIED)
+        sw_frame->color_range = inferred_range;
+    return sw_frame;
+}
+#endif
+
 bool QmlBackend::prepareFrameForPresentation(ChiakiFfmpegFrame &frame, bool use_opengl_renderer)
 {
     if (!frame.frame)
@@ -510,6 +673,24 @@ bool QmlBackend::prepareFrameForPresentation(ChiakiFfmpegFrame &frame, bool use_
         return frame_has_planes(frame.frame);
 
     const int format = frame.frame->format;
+#ifdef Q_OS_MACOS
+    if (format == AV_PIX_FMT_VIDEOTOOLBOX) {
+        if (AVFrame *wrapped = wrapVideoToolboxFrameReadOnly(frame.frame)) {
+            {
+                QMutexLocker locker(&hw_transfer_state_mutex);
+                if (!logged_hw_transfer_formats.contains(format)) {
+                    logged_hw_transfer_formats.insert(format);
+                    const char *format_name = av_get_pix_fmt_name(static_cast<AVPixelFormat>(format));
+                    qCInfo(chiakiGui) << "Zero-copy mapping VideoToolbox CVPixelBuffer into unified memory:"
+                                      << (format_name ? format_name : "unknown");
+                }
+            }
+            av_frame_free(&frame.frame);
+            frame.frame = wrapped;
+            return frame_has_planes(frame.frame);
+        }
+    }
+#endif
     {
         QMutexLocker locker(&hw_transfer_state_mutex);
         if (!logged_hw_transfer_formats.contains(format)) {
@@ -596,6 +777,53 @@ void QmlBackend::teardownSession()
     // 3) Safe now: schedule the deferred delete and drop the member.
     session->deleteLater();
     session = nullptr;
+
+    if (awdl_suppressed_by_app) {
+        setAwdlSuppressed(false);
+    }
+}
+
+void QmlBackend::refreshAwdlStatus()
+{
+#ifdef Q_OS_MACOS
+    QProcess proc;
+    proc.start(QStringLiteral("/sbin/ifconfig"), { QStringLiteral("awdl0") });
+    if (proc.waitForFinished(1000)) {
+        const QString out = QString::fromUtf8(proc.readAllStandardOutput());
+        const bool is_up = out.contains(QStringLiteral("<UP,")) || out.contains(QStringLiteral(",UP,")) || out.contains(QStringLiteral(",UP>"));
+        awdl_active = is_up;
+        awdl_status_text = is_up
+            ? tr("AWDL active (AirDrop/Handoff may cause Wi-Fi stutter)")
+            : tr("AWDL paused (Wi-Fi optimized for low-latency gaming)");
+    } else {
+        awdl_active = false;
+        awdl_status_text = tr("AWDL status unavailable");
+    }
+    emit awdlStatusChanged();
+#endif
+}
+
+void QmlBackend::setAwdlSuppressed(bool suppress)
+{
+#ifdef Q_OS_MACOS
+    const QString cmd = suppress ? QStringLiteral("/sbin/ifconfig awdl0 down") : QStringLiteral("/sbin/ifconfig awdl0 up");
+    const QString script = QStringLiteral("do shell script \"%1\" with administrator privileges").arg(cmd);
+    QProcess *proc = new QProcess(this);
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+        [this, proc, suppress](int exitCode, QProcess::ExitStatus exitStatus) {
+            proc->deleteLater();
+            if (exitStatus == QProcess::NormalExit && exitCode == 0) {
+                awdl_suppressed_by_app = suppress;
+                qCInfo(chiakiGui) << "macOS AWDL guard:" << (suppress ? "awdl0 disabled for low-latency stream" : "awdl0 restored");
+            } else {
+                qCWarning(chiakiGui) << "macOS AWDL guard command failed or cancelled (exit code" << exitCode << ")";
+            }
+            refreshAwdlStatus();
+        });
+    proc->start(QStringLiteral("/usr/bin/osascript"), { QStringLiteral("-e"), script });
+#else
+    Q_UNUSED(suppress);
+#endif
 }
 
 QmlMainWindow *QmlBackend::qmlWindow() const
@@ -1011,8 +1239,9 @@ FrameGenStage::Config QmlBackend::frameGenConfig(unsigned int stream_fps) const
 {
     FrameGenStage::Config framegen_config;
     framegen_config.enabled = settings->GetFrameGenEnabled();
-    framegen_config.model_dir = QCoreApplication::applicationDirPath() + "/models/" + settings->GetFrameGenModel();
+    framegen_config.model_dir = resolveFrameGenModelDir(settings->GetFrameGenModel());
     framegen_config.flow_divisor = settings->GetFrameGenFlowDivisor();
+    framegen_config.auto_scale = settings->GetFrameGenAutoScale();
     framegen_config.target_fps = static_cast<unsigned int>(settings->GetFrameGenTargetFps());
     framegen_config.protect_static = settings->GetFrameGenProtectStatic();
     framegen_config.stream_fps = stream_fps;
@@ -1035,6 +1264,11 @@ void QmlBackend::createSession(const StreamSessionConnectInfo &connect_info)
 
     session_info = connect_info;
     session_ever_connected = false;
+#ifdef Q_OS_MACOS
+    if (settings->GetMacAwdlGuardEnabled() && !awdl_suppressed_by_app) {
+        setAwdlSuppressed(true);
+    }
+#endif
     window->setStreamMaxFPS(connect_info.video_profile.max_fps);
     disable_zero_copy = !settings->GetUseZeroCopy();
     {
@@ -1214,46 +1448,50 @@ void QmlBackend::createSession(const StreamSessionConnectInfo &connect_info)
     }
 
     connect(session, &StreamSession::FfmpegFrameAvailable, frame_thread->parent(), [this, use_opengl_renderer]() {
-        ChiakiFfmpegDecoder *decoder = session->GetFfmpegDecoder();
-        if (!decoder) {
-            qCCritical(chiakiGui) << "Session has no FFmpeg decoder";
-            return;
-        }
-        int32_t frames_lost;
-        ChiakiFfmpegFrame frame = chiaki_ffmpeg_decoder_pull_frame(decoder, &frames_lost);
-        if (!frame.frame)
-            return;
-        logDecoderDeliveryStats(static_cast<qint64>(chiaki_time_now_monotonic_us()), frames_lost, frame.recovered);
-        logDecoderFramePtsStats(static_cast<qint64>(chiaki_time_now_monotonic_us()), frame.pts, frame.duration);
-        if (frame.recovered)
-            pending_recovered_frame.storeRelaxed(1);
+        for (;;) {
+            if (!session)
+                return;
+            ChiakiFfmpegDecoder *decoder = session->GetFfmpegDecoder();
+            if (!decoder) {
+                qCCritical(chiakiGui) << "Session has no FFmpeg decoder";
+                return;
+            }
+            int32_t frames_lost = 0;
+            ChiakiFfmpegFrame frame = chiaki_ffmpeg_decoder_pull_frame(decoder, &frames_lost);
+            if (!frame.frame)
+                return;
+            logDecoderDeliveryStats(static_cast<qint64>(chiaki_time_now_monotonic_us()), frames_lost, frame.recovered);
+            logDecoderFramePtsStats(static_cast<qint64>(chiaki_time_now_monotonic_us()), frame.pts, frame.duration);
+            if (frame.recovered)
+                pending_recovered_frame.storeRelaxed(1);
 
-        const qint64 prepare_begin_us = static_cast<qint64>(chiaki_time_now_monotonic_us());
-        if (!prepareFrameForPresentation(frame, use_opengl_renderer))
-        {
-            av_frame_free(&frame.frame);
-            return;
-        }
-        const qint64 prepare_end_us = static_cast<qint64>(chiaki_time_now_monotonic_us());
-        if (prepare_end_us >= prepare_begin_us && prepare_end_us - prepare_begin_us >= 5000) {
-            CHIAKI_NOISY_DEBUG().nospace()
-                << "[decode] prepare_frame_us=" << (prepare_end_us - prepare_begin_us)
-                << " pts=" << frame.pts;
-        }
+            const qint64 prepare_begin_us = static_cast<qint64>(chiaki_time_now_monotonic_us());
+            if (!prepareFrameForPresentation(frame, use_opengl_renderer))
+            {
+                av_frame_free(&frame.frame);
+                continue;
+            }
+            const qint64 prepare_end_us = static_cast<qint64>(chiaki_time_now_monotonic_us());
+            if (prepare_end_us >= prepare_begin_us && prepare_end_us - prepare_begin_us >= 5000) {
+                CHIAKI_NOISY_DEBUG().nospace()
+                    << "[decode] prepare_frame_us=" << (prepare_end_us - prepare_begin_us)
+                    << " pts=" << frame.pts;
+            }
 
-        if (pending_recovered_frame.fetchAndStoreRelaxed(0) != 0) {
-            frame.recovered = true;
-        }
+            if (pending_recovered_frame.fetchAndStoreRelaxed(0) != 0) {
+                frame.recovered = true;
+            }
 
-        const qint64 delivery_us = static_cast<qint64>(chiaki_time_now_monotonic_us());
-        if (framegen && framegen->enabled()) {
-            framegen->submit(frame, frames_lost, delivery_us);
-            return;
+            const qint64 delivery_us = static_cast<qint64>(chiaki_time_now_monotonic_us());
+            if (framegen && framegen->enabled()) {
+                framegen->submit(frame, frames_lost, delivery_us);
+                continue;
+            }
+            QmlMainWindow *target_window = window;
+            QMetaObject::invokeMethod(target_window, [target_window, frame, frames_lost, delivery_us]() mutable {
+                target_window->presentFrame(frame, frames_lost, delivery_us);
+            });
         }
-        QmlMainWindow *target_window = window;
-        QMetaObject::invokeMethod(target_window, [target_window, frame, frames_lost, delivery_us]() mutable {
-            target_window->presentFrame(frame, frames_lost, delivery_us);
-        });
     });
 
     StreamSession *session_for_connections = session;

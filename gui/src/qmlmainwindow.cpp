@@ -64,6 +64,7 @@ extern "C" {
 #if defined(Q_OS_MACOS)
 #include <objc/message.h>
 #include <objc/runtime.h>
+#include <pthread/qos.h>
 #endif
 
 Q_LOGGING_CATEGORY(chiakiGui, "chiaki.gui", QtInfoMsg);
@@ -412,6 +413,9 @@ public:
 protected:
     void run() override
     {
+#if defined(Q_OS_MACOS)
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
         std::unique_lock<std::mutex> lock(mutex);
         while (!stopping) {
             if (!armed) {
@@ -510,6 +514,9 @@ public:
 protected:
     void run() override
     {
+#if defined(Q_OS_MACOS)
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
         std::unique_lock<std::mutex> lock(mutex);
         while (!stopping) {
             if (!armed) {
@@ -625,6 +632,9 @@ public:
 protected:
     void run() override
     {
+#if defined(Q_OS_MACOS)
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
         for (;;) {
             DeferredSwapTask task;
             {
@@ -2773,6 +2783,10 @@ QmlMainWindow::~QmlMainWindow()
     pl_mpv_user_shader_destroy(&fsrcnnx_hook_16);
     for (const struct pl_hook *&hook : sharpen_hooks)
         pl_mpv_user_shader_destroy(&hook);
+    for (const struct pl_hook *&hook : cas_hooks)
+        pl_mpv_user_shader_destroy(&hook);
+    for (const struct pl_hook *&hook : vibrance_hooks)
+        pl_mpv_user_shader_destroy(&hook);
     if (render_backend == RenderBackend::Vulkan) {
         pl_vulkan_destroy(&placebo_vulkan);
         pl_vk_inst_destroy(&placebo_vk_inst);
@@ -2900,6 +2914,11 @@ void QmlMainWindow::setOverlayInteractionActive(bool active)
         scheduleUpdate(true, UpdateRequestReason::Unknown);
     } else if (previous != 0)
         scheduleUpdate(true, UpdateRequestReason::Unknown);
+}
+
+void QmlMainWindow::setQuickOverlayVisible(bool visible)
+{
+    quick_overlay_visible.storeRelease(visible ? 1 : 0);
 }
 
 void QmlMainWindow::setStatsOverlayActive(bool active)
@@ -5394,6 +5413,7 @@ renderer_backend_ready:
                 render_pending_during_cycle.storeRelaxed(0);
             }
             update_pending.storeRelaxed(0);
+            quick_overlay_visible.storeRelease(1);
             armQuickNeedSync("session_disconnected");
             quick_need_render.storeRelaxed(1);
             setStreamMaxFPS(60);
@@ -5424,6 +5444,11 @@ renderer_backend_ready:
 
         quick_render->prepareThread(render_thread);
         quick_render->moveToThread(render_thread);
+#if defined(Q_OS_MACOS)
+        QMetaObject::invokeMethod(quick_render, []() {
+            pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+        }, Qt::QueuedConnection);
+#endif
     }
 
     connect(quick_render, &QQuickRenderControl::sceneChanged, this, [this]() {
@@ -5495,6 +5520,38 @@ renderer_backend_ready:
             }
         } else {
             qCWarning(chiakiGui) << "Failed to open the sharpening shader";
+        }
+    }
+    {
+        // AMD FidelityFX CAS at three strengths (Low, Medium, High)
+        static const char *const cas_strengths[3] = {"0.35", "0.65", "0.95"};
+        QFile cas_file(QStringLiteral(":/shaders/robzplay_cas.glsl"));
+        if (cas_file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QByteArray source = cas_file.readAll();
+            for (int i = 0; i < 3; i++) {
+                QByteArray shader = source;
+                shader.replace("@CAS_SHARPNESS@", cas_strengths[i]);
+                cas_hooks[i] = pl_mpv_user_shader_parse(placeboGpu(), shader.constData(), static_cast<size_t>(shader.size()));
+                if (!cas_hooks[i])
+                    qCWarning(chiakiGui) << "Failed to parse the CAS shader, level" << (i + 1);
+            }
+        }
+    }
+    {
+        // Cinematic Vibrance & Clarity at two strengths (Subtle, Vivid)
+        static const char *const vib_levels[2] = {"0.18", "0.38"};
+        static const char *const clar_levels[2] = {"0.15", "0.30"};
+        QFile vib_file(QStringLiteral(":/shaders/robzplay_vibrance.glsl"));
+        if (vib_file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QByteArray source = vib_file.readAll();
+            for (int i = 0; i < 2; i++) {
+                QByteArray shader = source;
+                shader.replace("@VIBRANCE@", vib_levels[i]);
+                shader.replace("@CLARITY@", clar_levels[i]);
+                vibrance_hooks[i] = pl_mpv_user_shader_parse(placeboGpu(), shader.constData(), static_cast<size_t>(shader.size()));
+                if (!vibrance_hooks[i])
+                    qCWarning(chiakiGui) << "Failed to parse the vibrance shader, level" << (i + 1);
+            }
         }
     }
 
@@ -6195,7 +6252,11 @@ void QmlMainWindow::createSwapchain()
     surface_create_failures.storeRelease(0);
     surface_create_failure_first_us = 0;
 
+#ifdef Q_OS_MACOS
+    const int swapchain_depth = settings->GetVSyncEnabled() ? 2 : 1;
+#else
     const int swapchain_depth = 1;
+#endif
     struct pl_vulkan_swapchain_params swapchain_params = {
         .surface = surface,
         // Prefer MAILBOX for vsync (lower) latency when supported).
@@ -6208,7 +6269,11 @@ void QmlMainWindow::createSwapchain()
     if (!placebo_swapchain && !settings->GetVSyncEnabled()) {
         qCWarning(chiakiGui) << "Immediate present mode unsupported, falling back to FIFO VSync";
         swapchain_params.present_mode = VK_PRESENT_MODE_FIFO_KHR;
+#ifdef Q_OS_MACOS
+        swapchain_params.swapchain_depth = 2;
+#else
         swapchain_params.swapchain_depth = 1;
+#endif
         placebo_swapchain = pl_vulkan_create_swapchain(placebo_vulkan, &swapchain_params);
         present_vsync_enabled = true;
     }
@@ -6220,7 +6285,7 @@ void QmlMainWindow::createSwapchain()
             : swapchain_params.present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE"
             : swapchain_params.present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX"
             : "OTHER")
-        << " swapchain_depth=" << swapchain_depth
+        << " swapchain_depth=" << swapchain_params.swapchain_depth
         << " present_vsync_enabled=" << (present_vsync_enabled ? 1 : 0)
         << " created=" << (placebo_swapchain ? 1 : 0);
     if (!placebo_swapchain) {
@@ -7536,6 +7601,9 @@ void QmlMainWindow::render()
         finalize_render();
         return;
     }
+    const bool composite_quick_overlay = !has_video
+        || !loading_transition_complete.loadAcquire()
+        || quick_overlay_visible.loadAcquire() != 0;
     struct pl_overlay_part overlay_part = {
         .src = {0, 0, static_cast<float>(swapchain_size.width()), static_cast<float>(swapchain_size.height())},
         .dst = {0, 0, static_cast<float>(swapchain_size.width()), static_cast<float>(swapchain_size.height())},
@@ -7553,8 +7621,10 @@ void QmlMainWindow::render()
         .parts = &overlay_part,
         .num_parts = 1,
     };
-    target_frame.overlays = &overlay;
-    target_frame.num_overlays = 1;
+    if (composite_quick_overlay) {
+        target_frame.overlays = &overlay;
+        target_frame.num_overlays = 1;
+    }
     if(target_prim)
     {
         target_frame.color.primaries = static_cast<pl_color_primaries>(target_prim);
@@ -7715,16 +7785,57 @@ void QmlMainWindow::render()
                                                fsr_hook, fsrcnnx_hook_8, fsrcnnx_hook_16);
         }
     }
-    // Robz Play: the sharpening pass runs after any upscaling hook
+    // Robz Play: picture enhancement hooks (upscaling -> CAS/Sharpen -> Vibrance/Clarity)
     const int sharpen_level_now = sharpen_level.loadAcquire();
-    const struct pl_hook *sharpen_hook_now =
-        (sharpen_level_now >= 1 && sharpen_level_now <= 3) ? sharpen_hooks[sharpen_level_now - 1] : nullptr;
-    const struct pl_hook *active_hooks[2] = {nullptr, nullptr};
+    const int enhance_mode_now = picture_enhance_mode.loadAcquire();
+    const int vibrance_level_now = vibrance_level.loadAcquire();
+    const bool deband_quick_now = deband_quick_enabled.loadAcquire() != 0;
+
+    // Apply debanding & anti-ringing boost when quick deband or Ultra Crisp mode is active
+    struct pl_deband_params quick_deband_params = pl_deband_default_params;
+    if ((deband_quick_now || enhance_mode_now == 4) && !params.deband_params) {
+        quick_deband_params.iterations = 2;
+        quick_deband_params.threshold = 3.5f;
+        quick_deband_params.radius = 16.0f;
+        quick_deband_params.grain = 4.0f;
+        params.deband_params = &quick_deband_params;
+    }
+    if (enhance_mode_now == 4 && params.antiringing_strength < 0.7f) {
+        params.antiringing_strength = 0.8f;
+    }
+
+    // In Ultra Crisp mode (4), prefer FSRCNNX x2 neural upscaling when upscaling is not already active
+    if (enhance_mode_now == 4 && !fsrcnnx_hook && fsrcnnx_hook_8) {
+        fsrcnnx_hook = fsrcnnx_hook_8;
+    }
+
+    const struct pl_hook *sharp_or_cas_hook = nullptr;
+    if (sharpen_level_now >= 1 && sharpen_level_now <= 3) {
+        if (enhance_mode_now == 1) {
+            sharp_or_cas_hook = sharpen_hooks[sharpen_level_now - 1];
+        } else if (enhance_mode_now >= 2) {
+            sharp_or_cas_hook = cas_hooks[sharpen_level_now - 1]
+                ? cas_hooks[sharpen_level_now - 1]
+                : sharpen_hooks[sharpen_level_now - 1];
+        }
+    }
+
+    const struct pl_hook *vibrance_hook_now = nullptr;
+    if (vibrance_level_now >= 1 && vibrance_level_now <= 2) {
+        vibrance_hook_now = vibrance_hooks[vibrance_level_now - 1];
+    } else if (enhance_mode_now == 3 && vibrance_hooks[0]) {
+        // Cinema Vivid preset enables subtle vibrance & clarity even if slider is at 0
+        vibrance_hook_now = vibrance_hooks[0];
+    }
+
+    const struct pl_hook *active_hooks[3] = {nullptr, nullptr, nullptr};
     int active_hook_count = 0;
     if (fsrcnnx_hook)
         active_hooks[active_hook_count++] = fsrcnnx_hook;
-    if (sharpen_hook_now)
-        active_hooks[active_hook_count++] = sharpen_hook_now;
+    if (sharp_or_cas_hook)
+        active_hooks[active_hook_count++] = sharp_or_cas_hook;
+    if (vibrance_hook_now)
+        active_hooks[active_hook_count++] = vibrance_hook_now;
     if (active_hook_count > 0) {
         params.hooks = active_hooks;
         params.num_hooks = active_hook_count;
