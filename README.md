@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/robzplay/banner.svg" alt="Robz Play: Built for GTA VI. 30 FPS on PS5, 60 FPS on your screen." width="100%">
+  <img src="assets/robzplay/banner.svg" alt="Robz Play: PS5 & PS4 Remote Play with GPU Frame Generation — 30 FPS on console, 60 FPS on your screen." width="100%">
 </p>
 
 <p align="center">
@@ -8,8 +8,8 @@
   <a href="https://github.com/kutsalkiremitci/robz-play/stargazers"><img src="https://img.shields.io/github/stars/kutsalkiremitci/robz-play?style=flat-square&amp;logo=github&amp;label=stars&amp;color=D9A65A" alt="GitHub stars"></a>
   <a href="COPYING"><img src="https://img.shields.io/github/license/kutsalkiremitci/robz-play?style=flat-square&amp;label=license&amp;color=5A5853" alt="License: AGPL-3.0"></a>
   <br>
-  <img src="https://img.shields.io/badge/GTA%20VI-60%20FPS-E4845E?style=flat-square" alt="GTA VI: 60 FPS">
-  <img src="https://img.shields.io/badge/PS5%20Remote%20Play-1080p-E4845E?style=flat-square" alt="PS5 Remote Play: 1080p">
+  <img src="https://img.shields.io/badge/Frame%20Gen-30%20%E2%86%92%2060%20FPS-E4845E?style=flat-square" alt="Frame Gen: 30 to 60 FPS">
+  <img src="https://img.shields.io/badge/PS5%20%26%20PS4%20Remote%20Play-1080p-E4845E?style=flat-square" alt="PS5 & PS4 Remote Play: 1080p">
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-5A5853?style=flat-square" alt="Windows 10 and 11">
   <img src="https://img.shields.io/badge/UI-English%20%7C%20Turkish-8DB580?style=flat-square" alt="UI: English and Turkish">
   <img src="https://img.shields.io/badge/status-early%20release-D9A65A?style=flat-square" alt="Status: early release">
@@ -23,14 +23,14 @@
 
 # <img src="assets/robzplay/logo/robzplay-ikon.svg" alt="" width="46" height="46" align="top"> Robz Play
 
-**Robz Play is built for GTA VI: it lets you play games that run at 30 FPS on PS5 with 1080p and 60 FPS smoothness on your computer screen.** It connects to your PS5 over your home network via Remote Play, while your computer's GPU generates the in-between frames. No capture card required: a PS5, a computer, and the network they share are all you need.
+**Robz Play is a PS5 & PS4 Remote Play client with GPU frame generation: play 30 FPS console games at 1080p and 60 FPS smoothness on your computer screen.** It connects to your PlayStation over your home network via Remote Play, while your computer's GPU generates the in-between frames. No capture card required: a PS5 or PS4, a computer, and the network they share are all you need.
 
-- **1080p · 60 FPS:** PS5 Remote Play stream. Play your console from your computer; the image is what your console sends.
-- **30 → 60 FPS:** your GPU generates the in-between frames. A 120 FPS option is experimental.
-- **No capture card:** PS5, computer, and home network are enough.
+- **1080p · 60 FPS:** PS5 / PS4 Remote Play stream. Play your console from your computer with low-latency native streaming.
+- **30 → 60 FPS:** your GPU generates the in-between frames for 30 FPS-locked titles (such as GTA VI and other 30 FPS console games). A 120 FPS option is experimental.
+- **No capture card:** PS5/PS4, computer, and home network are enough.
 - **English & Turkish:** full UI support for both languages.
 
-Frame generation is optional: you can toggle it on or off with one click from the **Display mode** section in the middle of the home screen. GTA VI runs at 30 FPS on consoles; frame generation was written for this reason and developed while playing GTA VI. The same approach works in all PS5 and PS4 games locked to 30 FPS.
+Frame generation is optional: you can toggle it on or off with one click from the **Display mode** section in the middle of the home screen. It works across all PS5 and PS4 games locked to 30 FPS, while 60 FPS titles stream natively at 60 FPS.
 
 <p align="center">
   <a href="https://github.com/kutsalkiremitci/robz-play/releases/latest/download/RobzPlay-Setup.exe"><img src="https://img.shields.io/badge/FREE%20DOWNLOAD-WINDOWS%2010%20%C2%B7%2011-E4845E?style=for-the-badge&amp;logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjRkZGRkZGIiBzdHJva2Utd2lkdGg9IjIuNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMTIgM3YxMiIvPjxwYXRoIGQ9Im02LjUgOS41IDUuNSA1LjUgNS41LTUuNSIvPjxwYXRoIGQ9Ik00IDIwLjVoMTYiLz48L3N2Zz4%3D&amp;labelColor=C85A35" alt="Free download: RobzPlay-Setup.exe, Windows 10 and 11"></a>
