@@ -319,6 +319,28 @@ bool loadRifeModel(const std::string &param_path, const std::string &bin_path, P
 				blob_channels[layer.tops[0]] = 3;
 			continue;
 		}
+		if(layer.type == "MemoryData")
+		{
+			const int mw = layer.getInt(0, 0);
+			const int mh = layer.getInt(1, 0);
+			const int mc = layer.getInt(2, 0);
+			const int load_type = layer.getInt(21, 1);
+			layer.out_channels = (mc > 0) ? mc : 1;
+			layer.kernel_h = (mh > 0) ? mh : 1;
+			layer.kernel_w = (mw > 0) ? mw : 1;
+			const int count = layer.out_channels * layer.kernel_h * layer.kernel_w;
+			ncnn::Mat m = mb.load(count, load_type);
+			if(m.empty() || m.elemsize != 4u)
+			{
+				setError(error, "failed to load MemoryData for " + layer.name);
+				ok = false;
+				break;
+			}
+			floatToHalfBuffer(static_cast<const float *>(m.data), static_cast<size_t>(count), layer.weights_fp16);
+			if(layer.tops.size() == 1)
+				blob_channels[layer.tops[0]] = layer.out_channels;
+			continue;
+		}
 		if(layer.type == "Split")
 		{
 			const int c = blob_channels[layer.bottoms[0]];
@@ -357,7 +379,7 @@ bool loadRifeModel(const std::string &param_path, const std::string &bin_path, P
 					int e = ends[i];
 					if(s < 0)
 						s += in_c;
-					if(e == -233)
+					if(e == -233 || e > in_c)
 						e = in_c;
 					else if(e < 0)
 						e += in_c;
@@ -1033,6 +1055,11 @@ struct OpNode
 bool computeOpShape(const ParamLayer &layer, const std::unordered_map<std::string, TensorShape3> &shapes,
 	const std::vector<std::string> &bottoms, TensorShape3 &out_shape, std::string *error)
 {
+	if(layer.type == "MemoryData")
+	{
+		out_shape = { layer.out_channels, layer.kernel_h, layer.kernel_w };
+		return true;
+	}
 	if(layer.type == "Concat")
 	{
 		const int axis = layer.getInt(0, 0);
@@ -1126,7 +1153,7 @@ bool computeOpShape(const ParamLayer &layer, const std::unordered_map<std::strin
 			int en = i < ends.size() ? ends[i] : dim_size;
 			if(st < 0)
 				st += dim_size;
-			if(en == -233)
+			if(en == -233 || en > dim_size)
 				en = dim_size;
 			else if(en < 0)
 				en += dim_size;
@@ -1165,6 +1192,15 @@ bool emitGraphOp(MPSGraph *g, const OpNode &node, const ParsedModel &model,
 	}
 
 	const ParamLayer &layer = model.layers[static_cast<size_t>(node.layer_idx)];
+	if(layer.type == "MemoryData")
+	{
+		NSData *data = [NSData dataWithBytes:layer.weights_fp16.data()
+									  length:layer.weights_fp16.size() * sizeof(uint16_t)];
+		tensors[node.top] = [g constantWithData:data
+										  shape:@[@1, @(layer.out_channels), @(layer.kernel_h), @(layer.kernel_w)]
+									   dataType:MPSDataTypeFloat16];
+		return true;
+	}
 	if(layer.type == "Concat")
 	{
 		const int axis = layer.getInt(0, 0);
@@ -1308,7 +1344,7 @@ bool emitGraphOp(MPSGraph *g, const OpNode &node, const ParsedModel &model,
 			int en = i < ends.size() ? ends[i] : dim_size;
 			if(st < 0)
 				st += dim_size;
-			if(en == -233)
+			if(en == -233 || en > dim_size)
 				en = dim_size;
 			else if(en < 0)
 				en += dim_size;
