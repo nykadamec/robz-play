@@ -3,17 +3,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kutsalkiremitci/robz-play/releases/latest"><img src="https://img.shields.io/github/v/release/kutsalkiremitci/robz-play?style=flat-square&amp;label=release&amp;color=E4845E" alt="Latest release"></a>
-  <a href="https://github.com/kutsalkiremitci/robz-play/releases"><img src="https://img.shields.io/github/downloads/kutsalkiremitci/robz-play/total?style=flat-square&amp;label=downloads&amp;color=E4845E" alt="Total downloads"></a>
-  <a href="https://github.com/kutsalkiremitci/robz-play/stargazers"><img src="https://img.shields.io/github/stars/kutsalkiremitci/robz-play?style=flat-square&amp;logo=github&amp;label=stars&amp;color=D9A65A" alt="GitHub stars"></a>
-  <a href="COPYING"><img src="https://img.shields.io/github/license/kutsalkiremitci/robz-play?style=flat-square&amp;label=license&amp;color=5A5853" alt="License: AGPL-3.0"></a>
+  <a href="https://github.com/nykadamec/robz-play/releases/latest"><img src="https://img.shields.io/github/v/release/nykadamec/robz-play?style=flat-square&amp;label=release&amp;color=E4845E" alt="Latest release"></a>
+  <a href="https://github.com/nykadamec/robz-play/releases"><img src="https://img.shields.io/github/downloads/nykadamec/robz-play/total?style=flat-square&amp;label=downloads&amp;color=E4845E" alt="Total downloads"></a>
+  <a href="https://github.com/nykadamec/robz-play/stargazers"><img src="https://img.shields.io/github/stars/nykadamec/robz-play?style=flat-square&amp;logo=github&amp;label=stars&amp;color=D9A65A" alt="GitHub stars"></a>
+  <a href="COPYING"><img src="https://img.shields.io/github/license/nykadamec/robz-play?style=flat-square&amp;label=license&amp;color=5A5853" alt="License: AGPL-3.0"></a>
   <br>
   <img src="https://img.shields.io/badge/Frame%20Gen-30%20%E2%86%92%2060%20FPS-E4845E?style=flat-square" alt="Frame Gen: 30 to 60 FPS">
   <img src="https://img.shields.io/badge/PS5%20%26%20PS4%20Remote%20Play-1080p-E4845E?style=flat-square" alt="PS5 & PS4 Remote Play: 1080p">
+  <img src="https://img.shields.io/badge/macOS%2027-Apple%20Silicon%20(Rebuilt)-8DB580?style=flat-square" alt="macOS 27 Apple Silicon (Rebuilt)">
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-5A5853?style=flat-square" alt="Windows 10 and 11">
   <img src="https://img.shields.io/badge/UI-English%20%7C%20Turkish-8DB580?style=flat-square" alt="UI: English and Turkish">
-  <img src="https://img.shields.io/badge/status-early%20release-D9A65A?style=flat-square" alt="Status: early release">
 </p>
+
+> **App working on macOS 27 (rebuilt for macOS)** — Native Apple Silicon (`arm64`) build using **Metal + `MPSGraph`** for RIFE v4.6 frame generation, VideoToolbox `CVPixelBuffer` zero-copy decoding, and macOS QoS/threading optimizations. Confirmed running **30 → 60 FPS** smoothly on **MacBook Air M1** (with occasional minimal FPS drops).
 
 <p align="center">
   <a href="#step-by-step-setup"><img src="https://img.shields.io/badge/SETUP-3A3936?style=for-the-badge" alt="Setup"></a>
@@ -79,9 +81,9 @@ No extra hardware. Your console, your computer, and the home network they share 
 
 | | |
 |---|---|
-| **PlayStation 5** | PS4 also works. Remote Play must be enabled on the console (shown in [step 4](#4-prepare-your-ps5)). |
-| **Windows 10 or 11** *(macOS Apple Silicon also supported from source)* | 64-bit computer. 60 Hz display for 60 FPS, or 120 Hz+ display for 120 FPS. |
-| **Dedicated Vulkan GPU (or Apple Silicon Metal)** | NVIDIA GTX/RTX, AMD Radeon RX, Intel Arc, or Apple Silicon (native Metal + MPSGraph). Frame generation runs on the GPU; it is not DLSS and is not NVIDIA-only. |
+| **PlayStation 5 / PS4** | Remote Play must be enabled on the console (shown in [step 4](#4-prepare-your-ps5)). |
+| **macOS 27 (Apple Silicon) or Windows 10 / 11** | **App working on macOS 27 (rebuilt for macOS)** on Apple Silicon (`arm64`), and 64-bit Windows. 60 Hz display for 60 FPS, or 120 Hz+ display for 120 FPS. |
+| **Apple Silicon Metal or Dedicated Vulkan GPU** | Apple Silicon M-series (native **Metal + `MPSGraph`**), NVIDIA GTX/RTX, AMD Radeon RX, or Intel Arc. Frame generation runs on the GPU; it is not DLSS and is not NVIDIA-only. |
 | **Same home network** | PS5 and computer must be on the same network. Connecting both to your router via Ethernet gives the most stable picture. |
 | **PlayStation account** | One-time PSN sign-in when pairing your console. Not needed if your console is already linked in chiaki-ng. |
 
@@ -232,7 +234,27 @@ Press `Ctrl + O` to open the stream menu: volume, microphone, zoom, sharpening, 
 - **To uninstall**, remove Robz Play from Windows "Installed apps". Your settings remain in the Windows registry.
 
 <details>
-<summary><b>Building from source</b> (for developers)</summary>
+<summary><b>Building from source</b> (macOS 27 Apple Silicon &amp; Windows)</summary>
+
+#### macOS 27 (Apple Silicon — rebuilt for macOS)
+
+1. Clone the repository with its submodules:
+
+   ```bash
+   git clone --recursive https://github.com/nykadamec/robz-play.git
+   cd robz-play
+   ```
+
+2. Configure and build with CMake + Ninja (uses native Apple **Metal + `MPSGraph`** RIFE backend and VideoToolbox zero-copy):
+
+   ```bash
+   cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+   cmake --build build --target chiaki
+   ```
+
+3. Run `build/gui/chiaki.app` or sync into `RobzPlay.app` and launch it.
+
+#### Windows (MSYS2 / MinGW)
 
 1. Install [MSYS2](https://www.msys2.org/) at its default location (`C:\msys64`) and open the **MSYS2 MINGW64** shell.
 2. Clone the repository with its submodules:
@@ -251,7 +273,7 @@ Press `Ctrl + O` to open the stream menu: volume, microphone, zoom, sharpening, 
 
 4. Double-click **`start.bat`** in the repository root. The app launches from `dist\RobzPlay`.
 
-To produce the release installer (`RobzPlay-Setup.exe`) and portable zip package: `./scripts/robzplay-package.sh`.
+To produce the Windows release installer (`RobzPlay-Setup.exe`) and portable zip package: `./scripts/robzplay-package.sh`.
 
 </details>
 
@@ -259,10 +281,10 @@ To produce the release installer (`RobzPlay-Setup.exe`) and portable zip package
 
 Centered on the home screen. Frame generation is optional: toggle it on, off, or change its target in one click.
 
-| Mode | What it does | Seen in 30 FPS GTA VI |
+| Mode | What it does | Seen in 30 FPS console games |
 |---|---|:---:|
 | **Stream only** | Plain Remote Play: 1080p, 60 FPS stream, as sent by the console. Frame generation off, no extra latency. | 30 FPS |
-| **60 FPS** `For GTA VI` | Your PC's GPU draws the in-between frames; a 30 FPS game looks like 60 FPS. Default and recommended mode. | **60 FPS** |
+| **60 FPS** | Your computer's GPU draws the in-between frames; a 30 FPS game looks like 60 FPS. Default and recommended mode. | **60 FPS** |
 | **120 FPS** `Experimental` | Generates three frames between every two real frames. Requires a fast GPU and a 120 Hz+ display. | 120 FPS |
 
 **Good to know**
@@ -285,7 +307,9 @@ Robz Play was developed and tested with these defaults:
 
 | Renderer | Codec | Resolution | Stream | Bitrate | Audio |
 |:---:|:---:|:---:|:---:|:---:|:---:|
-| **Vulkan** | **H265** | **1080p** | **60 FPS** | **100 Mbps** | **100%** |
+| **Vulkan / Metal** | **H265** | **1080p** | **60 FPS** | **100 Mbps** | **100%** |
+
+On macOS Apple Silicon, **Auto-Scale / Auto** motion detail defaults to `flow_divisor = 3` (`640×384` optical flow at 1080p) on **Metal + `MPSGraph`**, paired with Contrast Adaptive Sharpening (CAS), Vibrance, and deband shaders.
 
 | Motion detail | Sharpening | FPS counter |
 |:---:|:---:|:---:|
@@ -374,9 +398,9 @@ Robz Play stands on the shoulders of open source. Thank you to the developers of
 |---|---|
 | [chiaki-ng](https://github.com/chiaki-ng/chiaki-ng) and Florian Märkl's [Chiaki](https://git.sr.ht/~thestr4ng3r/chiaki) before it | Complete Remote Play protocol and session handling |
 | [Qt 6 / QML](https://www.qt.io/) | User interface |
-| [libplacebo](https://code.videolan.org/videolan/libplacebo) + Vulkan | Video processing and rendering |
-| [FFmpeg](https://ffmpeg.org/) | Stream decoding |
-| [RIFE](https://github.com/hzwer/Practical-RIFE) v4.6 (hzwer), [rife-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan) (nihui), and [ncnn](https://github.com/Tencent/ncnn) | GPU frame generation |
+| [libplacebo](https://code.videolan.org/videolan/libplacebo) + Vulkan / Metal | Video processing, CAS/Vibrance/deband shaders, and rendering |
+| [FFmpeg](https://ffmpeg.org/) & VideoToolbox | Stream decoding (`CVPixelBufferRef` zero-copy on macOS) |
+| [RIFE](https://github.com/hzwer/Practical-RIFE) v4.6 (hzwer), Apple **Metal + `MPSGraph`**, [rife-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan) (nihui), and [ncnn](https://github.com/Tencent/ncnn) | GPU frame generation |
 | [NSIS](https://nsis.sourceforge.io/) | Windows installer |
 | [MSYS2](https://www.msys2.org/) / MinGW | Windows builds |
 
@@ -511,14 +535,14 @@ No. Video arrives from your PS5 over the network via Remote Play.
 
 No, it is not DLSS and does not use NVIDIA- or AMD-proprietary technology. Frame generation uses the open-source RIFE v4.6 model on ncnn + Vulkan (and native Metal + MPSGraph on Apple Silicon), so it works on NVIDIA GTX/RTX, AMD Radeon RX, Intel Arc, and Apple Silicon GPUs.
 
-DLSS runs inside the game engine using engine motion vectors. Because GTA VI runs on the PS5 and only video reaches your computer, Robz Play estimates motion directly from the incoming frames — which is why it works on any GPU and any game over Remote Play.
+DLSS runs inside the game engine using engine motion vectors. Because games run on the PS5 or PS4 and only video reaches your computer, Robz Play estimates motion directly from the incoming frames — which is why it works on any GPU and any game over Remote Play.
 
 </details>
 
 <details>
 <summary><b>Which games does it work with?</b></summary>
 
-Built for GTA VI and developed while playing GTA VI, it works with any PS5 or PS4 game that supports Remote Play. The biggest difference is in 30 FPS-locked games; a game already running at 60 FPS gains nothing from 60 FPS mode.
+It works with any PS5 or PS4 game that supports Remote Play. The biggest difference is in 30 FPS-locked games; a game already running at 60 FPS gains nothing from 60 FPS mode.
 
 </details>
 
@@ -552,7 +576,7 @@ It is free and open source (AGPL-3.0). It is not an official product: it has no 
 
 ## For developers
 
-- The frame generation core lives in `robzfg/`: RIFE v4.6 running on [ncnn](https://github.com/Tencent/ncnn) + Vulkan (and Apple Metal + `MPSGraph` on macOS). Use `robzfg-lab` to benchmark speed and PSNR quality.
+- The frame generation core lives in `robzfg/`: RIFE v4.6 running on native Apple **Metal + `MPSGraph`** on macOS (`ROBZFG_USE_VULKAN=1` forces the Vulkan/MoltenVK fallback) and [ncnn](https://github.com/Tencent/ncnn) + Vulkan on Windows/Linux. Use `robzfg-lab` to benchmark speed and PSNR quality, and `chiaki-unit` for unit tests.
 - The UI is Qt 6 / QML (`gui/src/qml`). Translations live in `gui/res/i18n/tr.json`; `python gui/tools/i18n_extract.py` lists missing strings.
 - Use `ROBZPLAY_UI_PREVIEW` (`stream-loading`, `stream-menu`, `home-empty`) to inspect UI states without a console, and `ROBZPLAY_SETTINGS_ORG` to test without touching your own settings.
 - Test frame generation on your PC without a PS5: `ROBZPLAY_FRAMEGEN_SELFTEST=1`.
